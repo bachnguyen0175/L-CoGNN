@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .contrast import Contrast
-from .sc_encoder import mySc_encoder
+from models.contrast import Contrast
+from models.sc_encoder import mySc_encoder
 from training.hetero_augmentations import HeteroAugmentationPipeline
-
+from models.kd_params import *
 
 class GCN(nn.Module):
     def __init__(self, in_ft, out_ft, bias=True):
@@ -269,8 +269,10 @@ class MiddleMyHeCo(nn.Module):
         total_reconstruction_loss = torch.tensor(0.0, device=feats[0].device)
         
         if self.training and use_augmentation:
+            # Augmentation pipeline only works on features now (no edge dropping)
             aug_feats, aug_info = self.augmentation_pipeline(feats)
-            aug_mps = mps
+            aug_mps = mps  # Use original meta-paths since no edge augmentation
+            # Add reconstruction loss if available
             if 'total_reconstruction_loss' in aug_info:
                 total_reconstruction_loss = aug_info['total_reconstruction_loss'] * 0.1  # weight
         else:
