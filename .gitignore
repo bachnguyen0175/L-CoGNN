@@ -33,3 +33,6 @@ node_classification_results_*.npz
 
 # Uncomment the line below to ignore the entire data folder
 # data/
+data/**/*.npz
+data/**/*.npy  
+data/**/*.pkl
