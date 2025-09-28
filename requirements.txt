@@ -1,18 +1,14 @@
-# KD-HGRL: Knowledge Distillation for Heterogeneous Graph Representation Learning
-# Dependencies for running the project
+# **Model Named**
 
 # Core PyTorch (CPU/GPU compatible - will auto-detect CUDA if available)
-torch==1.12.1
-torchvision==0.13.1
-# torch==1.12.1+cu116 --extra-index-url https://download.pytorch.org/whl/cu116
-# torchvision==0.13.1+cu116 --extra-index-url https://download.pytorch.org/whl/cu116
+# torch==2.1.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
+# torchvision==0.16.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
+# torchdata==0.7.1
+# torchaudio==2.1.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
 
-# PyTorch Sparse Operations (using pre-compiled wheels)
-# These are installed manually with the following commands:
-# uv pip install torch-scatter==2.0.9 -f https://pytorch-geometric.com/whl/torch-1.12.0+cu102.html
-# uv pip install torch-sparse==0.6.15 -f https://pytorch-geometric.com/whl/torch-1.12.0+cu102.html
-torch-sparse==0.6.15
-torch-scatter==2.0.9
+# Deep Graph Learning (CPU/GPU)
+# If you have installed dgl-cuXX package, please uninstall it first.
+# pip install  dgl -f https://data.dgl.ai/wheels/torch-2.1/cu118/repo.html
 
 # Numerical Computing
 numpy>=1.21.0,<2.0.0
@@ -28,11 +24,6 @@ jupyter>=1.0.0
 notebook>=6.4.0
 ipykernel>=6.0.0
 matplotlib>=3.5.0  # For plotting and visualization
-
-# Optional: GPU acceleration (uncomment if you have CUDA)
-# For CUDA 11.6: torch-scatter torch-cluster torch-spline-conv -f https://pytorch-geometric.com/whl/torch-1.12.0+cu116.html
-# For CUDA 11.7: torch-scatter torch-cluster torch-spline-conv -f https://pytorch-geometric.com/whl/torch-1.12.0+cu117.html  
-# For CUDA 11.8: torch-scatter torch-cluster torch-spline-conv -f https://pytorch-geometric.com/whl/torch-1.12.0+cu118.html
 
 # Development tools (optional)
 # pytest>=6.0.0
