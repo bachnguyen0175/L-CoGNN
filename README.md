@@ -291,41 +291,6 @@ flake8 code/
 | Middle Teacher | 840K | 31.8 | 8.7 |
 | Student | 420K | 15.9 | 4.2 |
 
-## 🐛 Troubleshooting
-
-### Common Issues
-
-#### 1. CUDA Out of Memory
-```bash
-# Solution: Reduce batch size or use CPU
-export CUDA_VISIBLE_DEVICES=""  # Use CPU only
-# Or modify --hidden_dim to smaller value
-```
-
-#### 2. Import Errors
-```bash
-# Solution: Check Python path
-cd code/
-python tests/test_imports.py
-```
-
-#### 3. Missing Dependencies
-```bash
-# Solution: Reinstall requirements
-pip install -r requirements.txt --upgrade
-```
-
-### Performance Issues
-
-#### Slow Training
-- **GPU**: Ensure CUDA is properly installed and detected
-- **Memory**: Monitor GPU memory usage with `nvidia-smi`
-- **Data**: Preload data to RAM if possible
-
-#### Poor Results
-- **Hyperparameters**: Try different learning rates and hidden dimensions
-- **Dataset**: Verify data loading and preprocessing
-- **Models**: Check model architecture and loss functions
 
 ## 🤝 Contributing
 
