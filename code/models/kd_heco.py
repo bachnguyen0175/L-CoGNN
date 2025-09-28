@@ -254,7 +254,7 @@ class MiddleMyHeCo(nn.Module):
                 'remask_rate': 0.2,
                 'edge_drop_rate': 0.05,
                 'num_remasking': 2,
-                'autoencoder_hidden_dim': args.hidden_dim // 2,  # Half of main hidden dim
+                'autoencoder_hidden_dim': self.original_hidden_dim // 2,  # Half of main hidden dim
                 'autoencoder_layers': 2,
                 'reconstruction_weight': 0.1
             }
