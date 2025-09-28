@@ -5,9 +5,9 @@ echo "🟣 Stage 4: Evaluation and Comparison"
 echo "===================================="
 
 DATASET="acm"
-TEACHER_MODEL="teacher_heco_${DATASET}.pkl"
-MIDDLE_TEACHER_MODEL="middle_teacher_heco_${DATASET}.pkl"
-STUDENT_MODEL="student_heco_${DATASET}.pkl"
+TEACHER_MODEL="../../results/models/teacher_heco_${DATASET}.pkl"
+MIDDLE_TEACHER_MODEL="../../results/models/middle_teacher_heco_${DATASET}.pkl"
+STUDENT_MODEL="../../results/models/student_heco_${DATASET}.pkl"
 
 # Check if all models exist
 missing_models=()
@@ -40,21 +40,26 @@ fi
 echo "Evaluating all models on GPU..."
 
 echo ""
+cd ..
+TEACHER_MODEL_EVAL="../results/models/teacher_heco_${DATASET}.pkl"
+MIDDLE_TEACHER_MODEL_EVAL="../results/models/middle_teacher_heco_${DATASET}.pkl"
+STUDENT_MODEL_EVAL="../results/models/student_heco_${DATASET}.pkl"
+
 echo "📊 Running KD-specific evaluation..."
-python3 ../evaluation/evaluate_kd.py \
+PYTHONPATH=. ../.venv/bin/python evaluation/evaluate_kd.py \
     --dataset="$DATASET" \
-    --teacher_model_path="$TEACHER_MODEL" \
-    --student_model_path="$STUDENT_MODEL" \
+    --teacher_model_path="$TEACHER_MODEL_EVAL" \
+    --student_model_path="$STUDENT_MODEL_EVAL" \
     --hidden_dim=64 \
     --gpu=0
 
 echo ""
 echo "📊 Running comprehensive evaluation on all three tasks..."
-python3 ../evaluation/comprehensive_evaluation.py \
+PYTHONPATH=. ../.venv/bin/python evaluation/comprehensive_evaluation.py \
     --dataset="$DATASET" \
-    --teacher_path="$TEACHER_MODEL" \
-    --student_path="$STUDENT_MODEL" \
-    --middle_teacher_path="$MIDDLE_TEACHER_MODEL" \
+    --teacher_path="$TEACHER_MODEL_EVAL" \
+    --student_path="$STUDENT_MODEL_EVAL" \
+    --middle_teacher_path="$MIDDLE_TEACHER_MODEL_EVAL" \
     --hidden_dim=64 \
     --gpu=0
 

@@ -5,19 +5,31 @@ echo "🟡 Stage 2: Training Middle Teacher from Teacher"
 echo "==============================================="
 
 DATASET="acm"
-TEACHER_MODEL="teacher_heco_${DATASET}.pkl"
-MIDDLE_TEACHER_MODEL="middle_teacher_heco_${DATASET}.pkl"
+# Paths for checking (from scripts directory)
+TEACHER_MODEL_CHECK="../../results/models/teacher_heco_${DATASET}.pkl"
+MIDDLE_TEACHER_MODEL_CHECK="../../results/models/middle_teacher_heco_${DATASET}.pkl"
+
+# Paths for Python script (from code directory after cd ..)  
+TEACHER_MODEL="../results/models/teacher_heco_${DATASET}.pkl"
+MIDDLE_TEACHER_MODEL="../results/models/middle_teacher_heco_${DATASET}.pkl"
+
+# Check if middle teacher already exists
+if [ -f "$MIDDLE_TEACHER_MODEL_CHECK" ]; then
+    echo "✅ Middle teacher model already exists: $MIDDLE_TEACHER_MODEL_CHECK"
+    echo "Delete the file if you want to retrain."
+    exit 0
+fi
 
 # Check if teacher exists
-if [ ! -f "$TEACHER_MODEL" ]; then
-    echo "❌ Teacher model not found: $TEACHER_MODEL"
+if [ ! -f "$TEACHER_MODEL_CHECK" ]; then
+    echo "❌ Teacher model not found: $TEACHER_MODEL_CHECK"
     echo "Please run 1_train_teacher.sh first"
     exit 1
 fi
 
 echo "Training middle teacher from teacher on GPU..."
 
-../.venv/bin/python ../training/train_middle_teacher.py \
+cd .. && PYTHONPATH=. ../.venv/bin/python training/train_middle_teacher.py \
     $DATASET \
     --hidden_dim=64 \
     --stage1_epochs=1000 \

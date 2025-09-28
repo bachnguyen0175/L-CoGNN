@@ -5,26 +5,31 @@ echo "🟠 Stage 3: Training Student from Middle Teacher"
 echo "==============================================="
 
 DATASET="acm"
-TEACHER_MODEL="teacher_heco_${DATASET}.pkl"
-MIDDLE_TEACHER_MODEL="middle_teacher_heco_${DATASET}.pkl"
-STUDENT_MODEL="student_heco_${DATASET}.pkl"
+# Paths for checking (from scripts directory)
+MIDDLE_TEACHER_MODEL_CHECK="../../results/models/middle_teacher_heco_${DATASET}.pkl"
+STUDENT_MODEL_CHECK="../../results/models/student_heco_${DATASET}.pkl"
 
-# Check if required models exist
-if [ ! -f "$TEACHER_MODEL" ]; then
-    echo "❌ Teacher model not found: $TEACHER_MODEL"
-    echo "Please run 1_train_teacher.sh first"
-    exit 1
+# Paths for Python script (from code directory after cd ..)
+MIDDLE_TEACHER_MODEL="../results/models/middle_teacher_heco_${DATASET}.pkl"
+STUDENT_MODEL="../results/models/student_heco_${DATASET}.pkl"
+
+# Check if student model already exists
+if [ -f "$STUDENT_MODEL_CHECK" ]; then
+    echo "✅ Student model already exists: $STUDENT_MODEL_CHECK"
+    echo "Delete the file if you want to retrain."
+    exit 0
 fi
 
-if [ ! -f "$MIDDLE_TEACHER_MODEL" ]; then
-    echo "❌ Middle teacher model not found: $MIDDLE_TEACHER_MODEL"
+# Check if required models exist
+if [ ! -f "$MIDDLE_TEACHER_MODEL_CHECK" ]; then
+    echo "❌ Middle teacher model not found: $MIDDLE_TEACHER_MODEL_CHECK"
     echo "Please run 2_train_middle_teacher.sh first"
     exit 1
 fi
 
 echo "Training student from middle teacher on GPU..."
 
-../.venv/bin/python ../training/train_student.py \
+cd .. && PYTHONPATH=. ../.venv/bin/python training/train_student.py \
     $DATASET \
     --hidden_dim=64 \
     --stage2_epochs=300 \

@@ -5,17 +5,20 @@ echo "🔵 Stage 1: Training Teacher Model"
 echo "=================================="
 
 DATASET="acm"
-TEACHER_MODEL="teacher_heco_${DATASET}.pkl"
+# Paths for checking (from scripts directory)
+TEACHER_MODEL_CHECK="../../results/models/teacher_heco_${DATASET}.pkl"
+# Path for Python script (from code directory after cd ..)
+TEACHER_MODEL="../results/models/teacher_heco_${DATASET}.pkl"
 
-if [ -f "$TEACHER_MODEL" ]; then
-    echo "✅ Teacher model already exists: $TEACHER_MODEL"
+if [ -f "$TEACHER_MODEL_CHECK" ]; then
+    echo "✅ Teacher model already exists: $TEACHER_MODEL_CHECK"
     echo "Delete the file if you want to retrain."
     exit 0
 fi
 
 echo "Training teacher model on GPU..."
 
-../.venv/bin/python ../training/pretrain_teacher.py \
+cd .. && PYTHONPATH=. ../.venv/bin/python training/pretrain_teacher.py \
     $DATASET \
     --hidden_dim=64 \
     --nb_epochs=10000 \
