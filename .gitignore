@@ -1,0 +1,33 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Heavy model files and data
+*.pkl
+*.pkl_
+*_epoch_*.pkl
+*.npz
+*.npy
+
+# Large CUDA installer
+*.run
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# Large data files
+*.coo
+*.png
+weighted_graph_values.txt
+
+# Results and output files
+result_*.txt
+node_classification_results_*.npz
+data/
