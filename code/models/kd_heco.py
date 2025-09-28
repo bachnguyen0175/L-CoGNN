@@ -249,12 +249,12 @@ class MiddleMyHeCo(nn.Module):
         if augmentation_config is None:
             augmentation_config = {
                 'use_node_masking': True,
-                'use_edge_augmentation': True,
                 'use_autoencoder': True,
                 'mask_rate': 0.1,
-                'remask_rate': 0.3,
-                'edge_drop_rate': 0.1,
-                'autoencoder_hidden_dim': self.compressed_dim,
+                'remask_rate': 0.2,
+                'edge_drop_rate': 0.05,
+                'num_remasking': 2,
+                'autoencoder_hidden_dim': args.hidden_dim // 2,  # Half of main hidden dim
                 'autoencoder_layers': 2,
                 'reconstruction_weight': 0.1
             }
@@ -269,8 +269,8 @@ class MiddleMyHeCo(nn.Module):
         total_reconstruction_loss = torch.tensor(0.0, device=feats[0].device)
         
         if self.training and use_augmentation:
-            aug_feats, aug_mps, aug_info = self.augmentation_pipeline(feats, mps)
-            # Add reconstruction loss if available
+            aug_feats, aug_info = self.augmentation_pipeline(feats)
+            aug_mps = mps
             if 'total_reconstruction_loss' in aug_info:
                 total_reconstruction_loss = aug_info['total_reconstruction_loss'] * 0.1  # weight
         else:
@@ -611,27 +611,25 @@ class StudentMyHeCo(nn.Module):
                 mask.data.fill_(1.0)
 
 # SimCLR
-def infoNCE(anchor, positive, nodes, temperature):
-    """InfoNCE loss for knowledge distillation"""
-    anchor = anchor[nodes]
-    positive = positive[nodes]
+def infoNCE(embeds1, embeds2, nodes, temperature):
+    """
+    Tính InfoNCE (Noise Contrastive Estimation)
+    """
+    # Normalize embeddings to unit sphere
+    embeds1 = F.normalize(embeds1 + 1e-8, p=2)
+    embeds2 = F.normalize(embeds2 + 1e-8, p=2) 
     
-    # Normalize embeddings
-    anchor = F.normalize(anchor, dim=-1)
-    positive = F.normalize(positive, dim=-1)
+    # Pick embeddings for selected nodes
+    pckEmbeds1 = embeds1[nodes]  # [batch_size, embed_dim]
+    pckEmbeds2 = embeds2[nodes]  # [batch_size, embed_dim]
     
-    # Compute similarities
-    pos_sim = torch.sum(anchor * positive, dim=-1) / temperature
+    # Positive pairs: same nodes in different embedding spaces
+    nume = torch.exp(torch.sum(pckEmbeds1 * pckEmbeds2, dim=-1) / temperature)  # [batch_size]
     
-    # Compute negative similarities (all other samples)
-    neg_sim = torch.matmul(anchor, positive.t()) / temperature
+    # Negative pairs: each node in embeds1 vs all nodes in embeds2  
+    deno = torch.exp(pckEmbeds1 @ embeds2.T / temperature).sum(-1) + 1e-8  # [batch_size]
     
-    # InfoNCE loss
-    exp_pos = torch.exp(pos_sim)
-    exp_neg = torch.sum(torch.exp(neg_sim), dim=-1)
-    
-    loss = -torch.log(exp_pos / (exp_pos + exp_neg)).mean()
-    return loss
+    return (-torch.log(nume / deno)).mean()
 
 
 def KLDiverge(teacher_logits, student_logits, temperature):
@@ -766,24 +764,7 @@ class MyHeCoKD(nn.Module):
         teacher, student = self.get_teacher_student_pair()
         
         if distill_config is None:
-            distill_config = {
-                'use_embedding_kd': True,
-                'use_prediction_kd': True,  # Now properly implemented
-                'use_heterogeneous_kd': True,
-                'use_self_contrast': True,
-                'use_subspace_contrast': True,
-                'use_multi_level_kd': True,  # Multi-level distillation
-                'embedding_temp': 4.0,
-                'prediction_temp': 3.0,  # Slightly lower for prediction-level
-                'self_contrast_temp': 1.0,
-                'embedding_weight': 0.4,  # Reduced to balance with prediction
-                'prediction_weight': 0.6,  # Higher weight for prediction-level KD
-                'heterogeneous_weight': 0.3,
-                'self_contrast_weight': 0.2,
-                'subspace_weight': 0.3,
-                'multi_level_weight': 0.4,
-                'pruning_run': 0
-            }
+            distill_config = get_distillation_config(kd_params())
         
         # Student forward pass
         student_loss = student(feats, pos, mps, nei_index)

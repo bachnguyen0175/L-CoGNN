@@ -12,7 +12,7 @@ def kd_params():
     # Basic model parameters
     parser.add_argument('--dataset', type=str, default="acm", choices=["acm", "dblp", "aminer", "freebase"])
     parser.add_argument('--hidden_dim', type=int, default=64)
-    parser.add_argument('--nb_epochs', type=int, default=10000)
+    parser.add_argument('--nb_epochs', type=int, default=1000)
     parser.add_argument('--patience', type=int, default=50)
     parser.add_argument('--lr', type=float, default=0.0008)
     parser.add_argument('--l2_coef', type=float, default=0)
@@ -53,7 +53,7 @@ def kd_params():
     parser.add_argument('--use_self_contrast', action='store_true', default=True, help="Use self-contrast loss from LightGNN")
     parser.add_argument('--use_subspace_contrast', action='store_true', default=True, help="Use subspace contrastive learning")
     
-    # Enhanced distillation weights (from LightGNN)
+    # Enhanced distillation weights
     parser.add_argument('--self_contrast_weight', type=float, default=0.2, help="Weight for self-contrast loss")
     parser.add_argument('--subspace_weight', type=float, default=0.3, help="Weight for subspace contrastive loss")
     parser.add_argument('--self_contrast_temp', type=float, default=1.0, help="Temperature for self-contrast")
@@ -63,7 +63,7 @@ def kd_params():
     parser.add_argument('--use_multi_level_kd', action='store_true', default=True, help="Use multi-level knowledge distillation")
     parser.add_argument('--multi_level_weight', type=float, default=0.4, help="Weight for multi-level distillation")
     
-    # Pruning and multi-stage training (adapted from LightGNN)
+    # Pruning and multi-stage training
     parser.add_argument('--use_multi_stage', action='store_true', default=False, help="Use multi-stage training")
     parser.add_argument('--mask_epochs', type=int, default=100, help="Epochs for mask training stage")
     parser.add_argument('--fixed_epochs', type=int, default=200, help="Epochs for fixed training stage") 
@@ -80,8 +80,8 @@ def kd_params():
     parser.add_argument('--middle_teacher_save_path', type=str, default="middle_teacher_heco.pkl", help="Middle teacher save path")
     
     # Hierarchical training parameters
-    parser.add_argument('--stage1_epochs', type=int, default=500, help='Epochs for stage 1 (teacher -> middle teacher)')
-    parser.add_argument('--stage2_epochs', type=int, default=1000, help='Epochs for stage 2 (middle teacher -> student)')
+    parser.add_argument('--stage1_epochs', type=int, default=1000, help='Epochs for stage 1 (teacher -> middle teacher)')
+    parser.add_argument('--stage2_epochs', type=int, default=300, help='Epochs for stage 2 (middle teacher -> student)')
     parser.add_argument('--stage1_distill_weight', type=float, default=0.7, help='Distillation weight for stage 1')
     parser.add_argument('--stage2_distill_weight', type=float, default=0.8, help='Distillation weight for stage 2')
     parser.add_argument('--middle_compression_ratio', type=float, default=0.7, help='Compression ratio for middle teacher')
