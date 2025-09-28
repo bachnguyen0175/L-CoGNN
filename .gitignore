@@ -30,4 +30,6 @@ weighted_graph_values.txt
 # Results and output files
 result_*.txt
 node_classification_results_*.npz
-data/
+
+# Uncomment the line below to ignore the entire data folder
+# data/
