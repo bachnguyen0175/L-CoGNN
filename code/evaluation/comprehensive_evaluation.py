@@ -172,8 +172,8 @@ class ComprehensiveEvaluator:
                 compression_ratio=compression_ratio
             ).to(self.device)
 
-            if 'student_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['student_state_dict'])
+            if 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
             else:
                 model.load_state_dict(checkpoint)
 
@@ -207,8 +207,8 @@ class ComprehensiveEvaluator:
                 augmentation_config=augmentation_config
             ).to(self.device)
 
-            if 'middle_teacher_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['middle_teacher_state_dict'])
+            if 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
             else:
                 model.load_state_dict(checkpoint)
 

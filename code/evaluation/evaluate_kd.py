@@ -104,7 +104,7 @@ class ModelEvaluator:
             compression_ratio=compression_ratio
         ).to(self.device)
         
-        model.load_state_dict(checkpoint['student_state_dict'])
+        model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
         
         return model, compression_ratio
