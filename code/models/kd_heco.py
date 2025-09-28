@@ -357,33 +357,36 @@ class StudentMyHeCo(nn.Module):
             self._init_attention_masks()
 
     def _init_attention_masks(self):
-        """Initialize attention pruning masks"""
-        # Meta-path attention masks
-        self.mp_att_mask_train = nn.Parameter(torch.ones(1, self.student_dim), requires_grad=True)
-        self.mp_att_mask_fixed = nn.Parameter(torch.ones(1, self.student_dim), requires_grad=False)
+        """Initialize learnable attention pruning masks"""
+        # Learnable importance scores (continuous values)
+        self.mp_att_importance = nn.Parameter(torch.ones(1, self.student_dim), requires_grad=True)
+        self.sc_att_importance = nn.Parameter(torch.ones(1, self.student_dim), requires_grad=True)
+        self.emb_importance = nn.Parameter(torch.ones(self.student_dim), requires_grad=True)
         
-        # Schema-level attention masks
-        self.sc_att_mask_train = nn.Parameter(torch.ones(1, self.student_dim), requires_grad=True)
-        self.sc_att_mask_fixed = nn.Parameter(torch.ones(1, self.student_dim), requires_grad=False)
-        
-        # Meta-path level pruning masks
-        self.mp_mask_train = nn.ParameterList([
+        # Meta-path importance scores
+        self.mp_importance = nn.ParameterList([
             nn.Parameter(torch.ones(1), requires_grad=True) for _ in range(self.P)
         ])
-        self.mp_mask_fixed = nn.ParameterList([
-            nn.Parameter(torch.ones(1), requires_grad=False) for _ in range(self.P)
-        ])
         
-        # Embedding dimension pruning masks
-        self.emb_mask_train = nn.Parameter(torch.ones(self.student_dim), requires_grad=True)
-        self.emb_mask_fixed = nn.Parameter(torch.ones(self.student_dim), requires_grad=False)
+        # Learnable thresholds for adaptive pruning
+        self.mp_att_threshold = nn.Parameter(torch.tensor(0.5), requires_grad=True)
+        self.sc_att_threshold = nn.Parameter(torch.tensor(0.5), requires_grad=True)
+        self.emb_threshold = nn.Parameter(torch.tensor(0.5), requires_grad=True)
+        self.mp_threshold = nn.Parameter(torch.tensor(0.5), requires_grad=True)
+        
+        # Temperature parameter for soft pruning
+        self.pruning_temperature = nn.Parameter(torch.tensor(1.0), requires_grad=True)
+        
+        # Sparsity regularization weights
+        self.register_buffer('sparsity_weight', torch.tensor(0.01))
+        self.register_buffer('target_sparsity', torch.tensor(0.7))  # Target 70% sparsity
 
     def forward(self, feats, pos, mps, nei_index):
         h_all = []
         for i in range(len(feats)):
             h_all.append(F.elu(self.feat_drop(self.fc_list[i](feats[i]))))
         
-        # Apply attention masks during forward pass
+        # Apply learnable attention masks during forward pass
         if self.enable_pruning:
             z_mp = self._forward_with_attention_masks(h_all[0], mps)
             z_sc = self._forward_sc_with_masks(h_all, nei_index)
@@ -391,22 +394,34 @@ class StudentMyHeCo(nn.Module):
             z_mp = self.mp(h_all[0], mps)
             z_sc = self.sc(h_all, nei_index)
             
-        loss = self.contrast(z_mp, z_sc, pos)
-        return loss
+        # Base contrastive loss
+        contrast_loss = self.contrast(z_mp, z_sc, pos)
+        
+        # Add learnable sparsity loss
+        if self.enable_pruning and self.training:
+            sparsity_loss = self.get_sparsity_loss()
+            total_loss = contrast_loss + sparsity_loss
+        else:
+            total_loss = contrast_loss
+            
+        return total_loss
 
     def _forward_with_attention_masks(self, h, mps):
-        """Forward pass with attention masks for meta-path encoder"""
+        """Forward pass with learnable attention masks for meta-path encoder"""
         if not self.enable_pruning:
             return self.mp(h, mps)
         
-        # Apply embedding mask to input
-        h_masked = h * self.emb_mask_train * self.emb_mask_fixed
+        # Get current learnable masks
+        mp_att_mask, sc_att_mask, emb_mask, mp_masks = self.get_learnable_masks()
         
-        # Apply meta-path level masks
+        # Apply learnable embedding mask to input
+        h_masked = h * emb_mask
+        
+        # Apply learnable meta-path level masks
         mps_masked = []
         for i, mp in enumerate(mps):
-            if i < len(self.mp_mask_train):
-                mask_val = self.mp_mask_train[i] * self.mp_mask_fixed[i]
+            if i < len(mp_masks):
+                mask_val = mp_masks[i]
                 if hasattr(mp, 'is_sparse') and mp.is_sparse:
                     mps_masked.append(mp * mask_val.item())
                 else:
@@ -420,29 +435,37 @@ class StudentMyHeCo(nn.Module):
             if i < len(mps_masked):
                 embeds.append(self.mp.node_level[i](h_masked, mps_masked[i]))
         
-        # Apply attention mask to attention mechanism
-        z_mp = self._attention_with_mask(embeds, self.mp_att_mask_train * self.mp_att_mask_fixed)
+        # Apply learnable attention mask to attention mechanism
+        z_mp = self._attention_with_mask(embeds, mp_att_mask)
         return z_mp
 
     def _forward_sc_with_masks(self, h_all, nei_index):
-        """Forward pass with attention masks for schema-level encoder"""
+        """Forward pass with learnable attention masks for schema-level encoder"""
         if not self.enable_pruning:
             return self.sc(h_all, nei_index)
         
-        # Apply embedding mask to all features
+        # Get current learnable masks
+        _, sc_att_mask, emb_mask, _ = self.get_learnable_masks()
+        
+        # Apply learnable embedding mask to all features
         h_masked = []
         for h in h_all:
-            h_masked.append(h * self.emb_mask_train * self.emb_mask_fixed)
+            h_masked.append(h * emb_mask)
         
         # Get schema-level representation with masked attention
         z_sc = self.sc(h_masked, nei_index)
+        
+        # Apply schema-level attention mask if applicable
+        if hasattr(self.sc, 'att') and sc_att_mask is not None:
+            z_sc = z_sc * sc_att_mask
+        
         return z_sc
 
     def _attention_with_mask(self, embeds, att_mask):
-        """Apply masked attention mechanism"""
+        """Apply learnable masked attention mechanism"""
         beta = []
         
-        # Apply mask to attention weights
+        # Apply learnable mask to attention weights
         masked_att = self.mp.att.att * att_mask
         attn_curr = self.mp.att.attn_drop(masked_att)
         
@@ -490,127 +513,149 @@ class StudentMyHeCo(nn.Module):
         return z_mp_aligned, z_sc_aligned
 
     def get_masks(self):
-        """Get current pruning masks for subspace contrastive learning"""
+        """Get current learnable pruning masks for subspace contrastive learning"""
         if not self.enable_pruning:
             dummy_mask = torch.ones(self.student_dim, device=next(self.parameters()).device)
             return dummy_mask, dummy_mask
         
-        # Combined embedding masks
-        emb_mask = self.emb_mask_train * self.emb_mask_fixed
+        # Get learnable masks
+        _, _, emb_mask, _ = self.get_learnable_masks()
         return emb_mask, emb_mask
 
+    def get_learnable_masks(self):
+        """Generate soft masks from learnable importance scores"""
+        # Soft thresholding with sigmoid and temperature
+        temp = torch.clamp(self.pruning_temperature, min=0.1, max=10.0)
+        
+        # Generate soft masks (differentiable)
+        mp_att_mask = torch.sigmoid((self.mp_att_importance - self.mp_att_threshold) / temp)
+        sc_att_mask = torch.sigmoid((self.sc_att_importance - self.sc_att_threshold) / temp)
+        emb_mask = torch.sigmoid((self.emb_importance - self.emb_threshold) / temp)
+        
+        mp_masks = []
+        for i in range(len(self.mp_importance)):
+            mp_mask = torch.sigmoid((self.mp_importance[i] - self.mp_threshold) / temp)
+            mp_masks.append(mp_mask)
+        
+        return mp_att_mask, sc_att_mask, emb_mask, mp_masks
+
+    def get_sparsity_loss(self):
+        """Calculate sparsity regularization loss to encourage pruning"""
+        if not self.enable_pruning:
+            return torch.tensor(0.0)
+        
+        mp_att_mask, sc_att_mask, emb_mask, mp_masks = self.get_learnable_masks()
+        
+        # L1 regularization on masks to encourage sparsity
+        sparsity_loss = 0.0
+        sparsity_loss += torch.mean(mp_att_mask)
+        sparsity_loss += torch.mean(sc_att_mask) 
+        sparsity_loss += torch.mean(emb_mask)
+        
+        for mp_mask in mp_masks:
+            sparsity_loss += torch.mean(mp_mask)
+        
+        # Target sparsity loss - encourage masks to reach target sparsity level
+        current_sparsity = sparsity_loss / (3 + len(mp_masks))  # Average sparsity
+        target_loss = torch.abs(current_sparsity - self.target_sparsity)
+        
+        total_sparsity_loss = (sparsity_loss + target_loss) * self.sparsity_weight
+        return total_sparsity_loss
+
     def apply_progressive_pruning(self, pruning_ratios):
-        """Apply progressive pruning based on magnitude"""
+        """Apply learnable progressive pruning (now just updates target sparsity)"""
         if not self.enable_pruning:
             return
-
-        with torch.no_grad():
-            # Prune attention weights
-            att_ratio = pruning_ratios.get('attention', 0.1)
-            if att_ratio > 0 and att_ratio < 1.0:
-                # Meta-path attention pruning
-                mp_att_importance = torch.abs(self.mp_att_mask_train * self.mp_att_mask_fixed)
-                if mp_att_importance.sum() > 0:
-                    mp_threshold = torch.quantile(mp_att_importance.flatten(), att_ratio)
-                    self.mp_att_mask_fixed.data = (mp_att_importance >= mp_threshold).float()
-                
-                # Schema-level attention pruning
-                sc_att_importance = torch.abs(self.sc_att_mask_train * self.sc_att_mask_fixed)
-                if sc_att_importance.sum() > 0:
-                    sc_threshold = torch.quantile(sc_att_importance.flatten(), att_ratio)
-                    self.sc_att_mask_fixed.data = (sc_att_importance >= sc_threshold).float()
-            
-            # Prune embedding dimensions
-            emb_ratio = pruning_ratios.get('embedding', 0.1)
-            if emb_ratio > 0 and emb_ratio < 1.0:  # Validate ratio range
-                try:
-                    combined_mask = self.emb_mask_train * self.emb_mask_fixed
-                    importance = torch.abs(combined_mask)
-
-                    # Ensure we have non-zero importance values
-                    if importance.sum() > 0:
-                        threshold = torch.quantile(importance, emb_ratio)
-                        self.emb_mask_fixed.data = (importance >= threshold).float()
-                    else:
-                        print("Warning: All embedding importance values are zero, skipping pruning")
-                except Exception as e:
-                    print(f"Warning: Embedding pruning failed: {e}")
-
-            # Prune meta-path connections
-            mp_ratio = pruning_ratios.get('metapath', 0.05)
-            if mp_ratio > 0 and mp_ratio < 1.0 and len(self.mp_mask_train) > 0:
-                try:
-                    for i in range(len(self.mp_mask_train)):
-                        if i >= len(self.mp_mask_fixed):
-                            break
-
-                        combined_mask = self.mp_mask_train[i] * self.mp_mask_fixed[i]
-                        importance = torch.abs(combined_mask)
-
-                        # For single values, use simple thresholding
-                        if importance.numel() == 1:
-                            if importance.item() < mp_ratio:
-                                self.mp_mask_fixed[i].data.fill_(0.0)
-                        else:
-                            # Handle multi-dimensional masks
-                            threshold = torch.quantile(importance, mp_ratio)
-                            self.mp_mask_fixed[i].data = (importance >= threshold).float()
-                except Exception as e:
-                    print(f"Warning: Meta-path pruning failed: {e}")
+        
+        # Update target sparsity based on training progress
+        max_sparsity = pruning_ratios.get('max_sparsity', 0.8)
+        min_sparsity = pruning_ratios.get('min_sparsity', 0.3)
+        
+        # Gradually increase target sparsity during training
+        current_epoch = pruning_ratios.get('current_epoch', 0)
+        max_epochs = pruning_ratios.get('max_epochs', 100)
+        
+        progress = min(current_epoch / max_epochs, 1.0)
+        new_target = min_sparsity + (max_sparsity - min_sparsity) * progress
+        
+        self.target_sparsity.data.fill_(new_target)
+        
+        # Optionally adjust sparsity weight
+        if 'sparsity_weight' in pruning_ratios:
+            self.sparsity_weight.data.fill_(pruning_ratios['sparsity_weight'])
 
     def get_attention_weights(self):
-        """Get current attention weights for analysis"""
+        """Get current learnable attention weights for analysis"""
         if not self.enable_pruning:
             return None, None
         
-        mp_att_weights = self.mp_att_mask_train * self.mp_att_mask_fixed
-        sc_att_weights = self.sc_att_mask_train * self.sc_att_mask_fixed
-        
-        return mp_att_weights.detach(), sc_att_weights.detach()
+        mp_att_mask, sc_att_mask, _, _ = self.get_learnable_masks()
+        return mp_att_mask.detach(), sc_att_mask.detach()
 
     def get_sparsity_stats(self):
-        """Get current sparsity statistics"""
+        """Get current learnable sparsity statistics"""
         if not self.enable_pruning:
             return {
                 'embedding_sparsity': 1.0, 
                 'metapath_sparsity': 1.0,
                 'mp_attention_sparsity': 1.0,
-                'sc_attention_sparsity': 1.0
+                'sc_attention_sparsity': 1.0,
+                'importance_stats': {}
             }
 
-        # Embedding sparsity
-        emb_mask = self.emb_mask_train * self.emb_mask_fixed
-        emb_sparsity = (emb_mask != 0).float().mean().item()
-
+        # Get learnable masks
+        mp_att_mask, sc_att_mask, emb_mask, mp_masks = self.get_learnable_masks()
+        
+        # Calculate sparsity (values close to 1 = kept, close to 0 = pruned)
+        emb_sparsity = torch.mean(emb_mask).item()
+        mp_att_sparsity = torch.mean(mp_att_mask).item()
+        sc_att_sparsity = torch.mean(sc_att_mask).item()
+        
         # Meta-path sparsity
         mp_sparsity = 0.0
-        for i in range(len(self.mp_mask_train)):
-            mask = self.mp_mask_train[i] * self.mp_mask_fixed[i]
-            mp_sparsity += (mask != 0).float().mean().item()
-        mp_sparsity /= len(self.mp_mask_train) if len(self.mp_mask_train) > 0 else 1
+        for mp_mask in mp_masks:
+            mp_sparsity += torch.mean(mp_mask).item()
+        mp_sparsity /= len(mp_masks) if len(mp_masks) > 0 else 1
         
-        # Attention sparsity
-        mp_att_sparsity = (self.mp_att_mask_train * self.mp_att_mask_fixed != 0).float().mean().item()
-        sc_att_sparsity = (self.sc_att_mask_train * self.sc_att_mask_fixed != 0).float().mean().item()
+        # Importance statistics
+        importance_stats = {
+            'mp_att_importance_mean': torch.mean(self.mp_att_importance).item(),
+            'sc_att_importance_mean': torch.mean(self.sc_att_importance).item(),
+            'emb_importance_mean': torch.mean(self.emb_importance).item(),
+            'mp_threshold': self.mp_threshold.item(),
+            'pruning_temperature': self.pruning_temperature.item(),
+            'target_sparsity': self.target_sparsity.item()
+        }
 
         return {
             'embedding_sparsity': emb_sparsity,
             'metapath_sparsity': mp_sparsity,
             'mp_attention_sparsity': mp_att_sparsity,
-            'sc_attention_sparsity': sc_att_sparsity
+            'sc_attention_sparsity': sc_att_sparsity,
+            'importance_stats': importance_stats
         }
 
-    def reset_trainable_masks(self):
-        """Reset trainable masks to ones for next training iteration"""
+    def reset_learnable_parameters(self):
+        """Reset learnable parameters for fresh training (optional)"""
         if not self.enable_pruning:
             return
             
         with torch.no_grad():
-            self.mp_att_mask_train.data.fill_(1.0)
-            self.sc_att_mask_train.data.fill_(1.0)
-            self.emb_mask_train.data.fill_(1.0)
-            for mask in self.mp_mask_train:
-                mask.data.fill_(1.0)
+            # Reset importance scores to encourage learning from scratch
+            self.mp_att_importance.data.fill_(1.0)
+            self.sc_att_importance.data.fill_(1.0)
+            self.emb_importance.data.fill_(1.0)
+            for importance in self.mp_importance:
+                importance.data.fill_(1.0)
+            
+            # Reset thresholds to middle values
+            self.mp_att_threshold.data.fill_(0.5)
+            self.sc_att_threshold.data.fill_(0.5)
+            self.emb_threshold.data.fill_(0.5)
+            self.mp_threshold.data.fill_(0.5)
+            
+            # Reset temperature
+            self.pruning_temperature.data.fill_(1.0)
 
 # SimCLR
 def infoNCE(embeds1, embeds2, nodes, temperature):
@@ -864,14 +909,6 @@ class MyHeCoKD(nn.Module):
                 multi_level_loss = infoNCE(high_order_teacher, student_combined, nodes, distill_config['embedding_temp'])
                 total_distill_loss += distill_config['multi_level_weight'] * multi_level_loss
                 losses['multi_level_distill'] = multi_level_loss
-
-        # Heterogeneous graph specific distillation
-        if distill_config['use_heterogeneous_kd']:
-            mp_mse_loss = F.mse_loss(student_mp, teacher_mp)
-            sc_mse_loss = F.mse_loss(student_sc, teacher_sc)
-            hetero_distill_loss = mp_mse_loss + sc_mse_loss
-            total_distill_loss += distill_config['heterogeneous_weight'] * hetero_distill_loss
-            losses['heterogeneous_distill'] = hetero_distill_loss
 
         # Prediction-level knowledge distillation (for downstream tasks)
         if distill_config['use_prediction_kd']:

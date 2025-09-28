@@ -32,7 +32,7 @@ echo "Training student from middle teacher on GPU..."
 cd .. && PYTHONPATH=. ../.venv/bin/python training/train_student.py \
     $DATASET \
     --hidden_dim=64 \
-    --stage2_epochs=300 \
+    --stage2_epochs=200 \
     --patience=50 \
     --lr=0.001 \
     --tau=0.8 \

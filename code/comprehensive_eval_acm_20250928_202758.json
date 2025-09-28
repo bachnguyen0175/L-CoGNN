@@ -1,0 +1,106 @@
+{
+  "dataset": "acm",
+  "timestamp": "2025-09-28 20:21:07",
+  "models": {
+    "teacher": {
+      "model_type": "teacher",
+      "total_parameters": 609794,
+      "trainable_parameters": 609794,
+      "embedding_dim": 64,
+      "node_classification": {
+        "accuracy": 0.8460000157356262,
+        "macro_f1": 0.8501113934512197,
+        "micro_f1": 0.846
+      },
+      "link_prediction": {
+        "auc": 0.771792339599878,
+        "ap": 0.7819729798822774,
+        "hits_at_10": 1.0,
+        "hits_at_50": 1.0,
+        "hits_at_100": 0.97
+      },
+      "node_clustering": {
+        "nmi": 0.19865341175905432,
+        "nmi_std": 0.0002905527887936274,
+        "ari": 0.16263821269937934,
+        "ari_std": 0.0003680610900773241,
+        "accuracy": 0.571161980592187,
+        "accuracy_std": 0.0003196126543584503,
+        "modularity": 0.012666533424345712
+      }
+    },
+    "student": {
+      "model_type": "student",
+      "total_parameters": 300969,
+      "trainable_parameters": 300969,
+      "embedding_dim": 32,
+      "node_classification": {
+        "accuracy": 0.8870000243186951,
+        "macro_f1": 0.8894857275063978,
+        "micro_f1": 0.887
+      },
+      "link_prediction": {
+        "auc": 0.6217473771929278,
+        "ap": 0.6559697303939718,
+        "hits_at_10": 1.0,
+        "hits_at_50": 0.96,
+        "hits_at_100": 0.92
+      },
+      "node_clustering": {
+        "nmi": 0.5011018014662915,
+        "nmi_std": 0.0004983943717917294,
+        "ari": 0.5078893720134373,
+        "ari_std": 0.0005378418641872839,
+        "accuracy": 0.8037322717093804,
+        "accuracy_std": 0.0003300945300179801,
+        "modularity": -0.00015799486185321957
+      }
+    },
+    "middle_teacher": {
+      "model_type": "middle_teacher",
+      "total_parameters": 111580478,
+      "trainable_parameters": 111580478,
+      "embedding_dim": 44,
+      "node_classification": {
+        "accuracy": 0.8770000338554382,
+        "macro_f1": 0.8809629059621845,
+        "micro_f1": 0.877
+      },
+      "link_prediction": {
+        "auc": 0.8289916107486894,
+        "ap": 0.8045999683573652,
+        "hits_at_10": 0.9,
+        "hits_at_50": 0.94,
+        "hits_at_100": 0.94
+      },
+      "node_clustering": {
+        "nmi": 0.5526135498081537,
+        "nmi_std": 0.0003441801112718745,
+        "ari": 0.5508711400573337,
+        "ari_std": 9.207038152148073e-05,
+        "accuracy": 0.8290619557103757,
+        "accuracy_std": 0.0,
+        "modularity": 0.04490780484423006
+      }
+    }
+  },
+  "comparison": {
+    "parameter_reduction": 0.5064415195951419,
+    "task_comparisons": {
+      "node_classification": {
+        "accuracy_retention": 1.0484633662180467,
+        "macro_f1_retention": 1.046316676095034,
+        "micro_f1_retention": 1.0484633569739954
+      },
+      "link_prediction": {
+        "auc_retention": 0.805588945745771,
+        "ap_retention": 0.8388649573195293
+      },
+      "node_clustering": {
+        "nmi_retention": 2.5224928030638365,
+        "ari_retention": 3.122816978763906,
+        "accuracy_retention": 1.4071879764757136
+      }
+    }
+  }
+}

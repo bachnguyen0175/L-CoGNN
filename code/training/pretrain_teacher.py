@@ -40,7 +40,7 @@ class TeacherTrainer:
 
         # Set default ratio if not provided
         if not hasattr(args, 'ratio'):
-            args.ratio = [60, 40]
+            args.ratio = ["70_15_15"]
 
         self.nei_index, self.feats, self.mps, self.pos, self.label, self.idx_train, self.idx_val, self.idx_test = load_data(args.dataset, args.ratio, args.type_num)
         
@@ -49,6 +49,7 @@ class TeacherTrainer:
         self.feats_dim_list = [feat.shape[1] for feat in self.feats]
         self.P = len(self.mps)
         
+        print(f"Number of nodes: {self.label.shape[0]}")
         print(f"Dataset: {args.dataset}")
         print(f"Number of classes: {self.nb_classes}")
         print(f"Feature dimensions: {self.feats_dim_list}")

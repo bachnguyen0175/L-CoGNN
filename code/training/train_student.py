@@ -43,7 +43,7 @@ class StudentTrainer:
 
         # Set default ratio if not provided
         if not hasattr(args, 'ratio'):
-            args.ratio = [60, 40]
+            args.ratio = ["70_15_15"]
 
         self.nei_index, self.feats, self.mps, self.pos, self.label, self.idx_train, self.idx_val, self.idx_test = load_data(args.dataset, args.ratio, args.type_num)
         
@@ -345,7 +345,17 @@ class StudentTrainer:
         if final_sparsity:
             print(f"Final Sparsity Statistics:")
             for key, value in final_sparsity.items():
-                print(f"  {key}: {value:.3f}")
+                if isinstance(value, dict):
+                    print(f"  {key}:")
+                    for sub_key, sub_value in value.items():
+                        if isinstance(sub_value, (int, float)):
+                            print(f"    {sub_key}: {sub_value:.3f}")
+                        else:
+                            print(f"    {sub_key}: {sub_value}")
+                elif isinstance(value, (int, float)):
+                    print(f"  {key}: {value:.3f}")
+                else:
+                    print(f"  {key}: {value}")
         
         print("Student training completed!")
         return accuracy, macro_f1, micro_f1
