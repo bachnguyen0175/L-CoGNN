@@ -27,7 +27,7 @@ echo "Training student from middle teacher on GPU..."
 ../.venv/bin/python ../training/train_student.py \
     $DATASET \
     --hidden_dim=64 \
-    --stage2_epochs=2000 \
+    --stage2_epochs=300 \
     --patience=50 \
     --lr=0.001 \
     --tau=0.8 \
