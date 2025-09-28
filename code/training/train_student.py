@@ -86,7 +86,6 @@ class StudentTrainer:
         # Setup augmentation config for middle teacher
         self.augmentation_config = {
             'use_node_masking': getattr(self.args, 'use_node_masking', True),
-            'use_edge_augmentation': getattr(self.args, 'use_edge_augmentation', True),
             'use_autoencoder': getattr(self.args, 'use_autoencoder', True),
             'mask_rate': getattr(self.args, 'mask_rate', 0.1),
             'remask_rate': getattr(self.args, 'remask_rate', 0.2),
