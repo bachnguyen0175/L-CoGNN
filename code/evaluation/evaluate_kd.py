@@ -27,21 +27,21 @@ class ModelEvaluator:
         
         # Set dataset-specific parameters
         if args.dataset == "acm":
-            args.ratio = [60, 40]  # 60% train, 20% val, 20% test
             args.type_num = [4019, 7167, 60]  # [paper, author, subject]
             args.nei_num = 2
         elif args.dataset == "dblp":
-            args.ratio = [60, 40]   # 60% train, 20% val, 20% test
             args.type_num = [4057, 14328, 7723, 20]  # [paper, author, conference, term]
             args.nei_num = 3
         elif args.dataset == "aminer":
-            args.ratio = [60, 40]   # 60% train, 20% val, 20% test
             args.type_num = [6564, 13329, 35890]  # [paper, author, reference]
             args.nei_num = 2
         elif args.dataset == "freebase":
-            args.ratio = [60, 40]   # 60% train, 20% val, 20% test
             args.type_num = [3492, 2502, 33401, 4459]  # [movie, director, actor, writer]
             args.nei_num = 3
+
+        # Set default ratio if not provided
+        if not hasattr(args, 'ratio'):
+            args.ratio = ["60_20_20"]
 
         # Load data
         print(f"Loading {args.dataset} dataset...")

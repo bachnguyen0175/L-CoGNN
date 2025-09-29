@@ -23,7 +23,7 @@ def kd_params():
     parser.add_argument('--attn_drop', type=float, default=0.5)
     parser.add_argument('--sample_rate', nargs='+', type=int, default=[7, 1])
     parser.add_argument('--lam', type=float, default=0.5)
-    
+
     # Evaluation parameters
     parser.add_argument('--eva_lr', type=float, default=0.05)
     parser.add_argument('--eva_wd', type=float, default=0)
@@ -40,7 +40,7 @@ def kd_params():
     # Distillation loss weights
     parser.add_argument('--embedding_weight', type=float, default=0.5, help="Weight for embedding-level distillation")
     parser.add_argument('--heterogeneous_weight', type=float, default=0.3, help="Weight for heterogeneous distillation")
-    parser.add_argument('--prediction_weight', type=float, default=0.5, help="Weight for prediction-level distillation")
+    parser.add_argument('--prediction_weight', type=float, default=0.8, help="Weight for prediction-level distillation")
     
     # Distillation temperatures
     parser.add_argument('--embedding_temp', type=float, default=4.0, help="Temperature for embedding distillation")

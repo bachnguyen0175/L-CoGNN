@@ -54,21 +54,21 @@ class ComprehensiveEvaluator:
         """Load dataset with all necessary components"""
         # Set dataset-specific parameters
         if self.args.dataset == "acm":
-            self.args.ratio = [60, 40]  # 60% train, 20% val, 20% test
             self.args.type_num = [4019, 7167, 60]  # [paper, author, subject]
             self.args.nei_num = 2
         elif self.args.dataset == "dblp":
-            self.args.ratio = [60, 40]  # 60% train, 20% val, 20% test
             self.args.type_num = [4057, 14328, 7723, 20]  # [paper, author, conference, term]
             self.args.nei_num = 3
         elif self.args.dataset == "aminer":
-            self.args.ratio = [60, 40]  # 60% train, 20% val, 20% test
             self.args.type_num = [6564, 13329, 35890]  # [paper, author, reference]
             self.args.nei_num = 2
         elif self.args.dataset == "freebase":
-            self.args.ratio = [60, 40]  # 60% train, 20% val, 20% test
             self.args.type_num = [3492, 2502, 33401, 4459]  # [movie, director, actor, writer]
             self.args.nei_num = 3
+
+        # Set default ratio if not provided
+        if not hasattr(self.args, 'ratio'):
+            self.args.ratio = ["60_20_20"]
 
         data = load_data(self.args.dataset, self.args.ratio, self.args.type_num)
 

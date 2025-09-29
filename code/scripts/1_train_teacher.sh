@@ -6,9 +6,9 @@ echo "=================================="
 
 DATASET="acm"
 # Paths for checking (from scripts directory)
-TEACHER_MODEL_CHECK="../../results/models/teacher_heco_${DATASET}.pkl"
+TEACHER_MODEL_CHECK="../../results/teacher_heco_${DATASET}.pkl"
 # Path for Python script (from code directory after cd ..)
-TEACHER_MODEL="../results/models/teacher_heco_${DATASET}.pkl"
+TEACHER_MODEL="../results/teacher_heco_${DATASET}.pkl"
 
 if [ -f "$TEACHER_MODEL_CHECK" ]; then
     echo "✅ Teacher model already exists: $TEACHER_MODEL_CHECK"
@@ -21,8 +21,8 @@ echo "Training teacher model on GPU..."
 cd .. && PYTHONPATH=. ../.venv/bin/python training/pretrain_teacher.py \
     $DATASET \
     --hidden_dim=64 \
-    --nb_epochs=10000 \
-    --patience=50 \
+    --nb_epochs=400 \
+    --patience=10 \
     --lr=0.0008 \
     --tau=0.8 \
     --feat_drop=0.3 \

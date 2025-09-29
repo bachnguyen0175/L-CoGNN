@@ -157,7 +157,7 @@ def evaluate_node_classification(embeds, idx_train, idx_val, idx_test, label, nb
     test_macro_f1s = []
     logits_list = []
 
-    for iter_ in range(10000):
+    for iter_ in range(500):
         # train
         log.train()
         opt.zero_grad()
@@ -200,14 +200,11 @@ def evaluate_node_classification(embeds, idx_train, idx_val, idx_test, label, nb
         test_micro_f1s.append(test_f1_micro)
         logits_list.append(logits)
 
-    max_iter = val_accs.index(max(val_accs))
-    acc = test_accs[max_iter]
-
-    max_iter = val_macro_f1s.index(max(val_macro_f1s))
-    macro_f1 = test_macro_f1s[max_iter]
-
-    max_iter = val_micro_f1s.index(max(val_micro_f1s))
-    micro_f1 = test_micro_f1s[max_iter]
+    # FIX: Use the same epoch for all metrics (based on best validation macro F1)
+    best_iter = val_macro_f1s.index(max(val_macro_f1s))
+    acc = test_accs[best_iter]
+    macro_f1 = test_macro_f1s[best_iter]
+    micro_f1 = test_micro_f1s[best_iter]
 
     return acc, macro_f1, micro_f1
 
@@ -277,11 +274,12 @@ def evaluate_link_prediction(embeddings, test_edges, test_edges_false, device='c
         # Sort by score (descending)
         edge_list.sort(key=lambda x: x[0], reverse=True)
 
-        # Calculate Hits@K
+        # Calculate Hits@K (FIXED: proper recall-based calculation)
         if len(edge_list) >= k:
             top_k_edges = edge_list[:k]
             hits = sum([1 for score, label, edge in top_k_edges if label == 1])
-            hits_at_k[f'hits_at_{k}'] = hits / min(k, len(test_edges))
+            # Hits@K should be recall: how many true positives found in top-K
+            hits_at_k[f'hits_at_{k}'] = hits / len(test_edges)
         else:
             hits_at_k[f'hits_at_{k}'] = 0.0
 
@@ -323,7 +321,7 @@ def generate_negative_edges(pos_edges, num_nodes, num_neg_edges=None):
     return np.array(neg_edges)
 
 
-def split_edges_for_link_prediction(edges, test_ratio=0.1, val_ratio=0.05):
+def split_edges_for_link_prediction(edges, test_ratio=0.2, val_ratio=0.2):
     """
     Split edges into train/val/test sets for link prediction
 
@@ -526,8 +524,10 @@ def evaluate_all_downstream_tasks(embeddings, labels, edges=None, num_nodes=None
     # 1. Node Classification Evaluation
     print("\n1. Node Classification...")
     try:
-        # Create train/val/test splits (you may want to use your existing splits)
+        # WARNING: This creates random splits each time - should use fixed splits for fair comparison!
+        # FIXED: Use fixed random seed for reproducible splits
         num_nodes_total = embeddings.shape[0]
+        np.random.seed(42)  # Fixed seed for reproducibility
         indices = np.random.permutation(num_nodes_total)
 
         train_ratio, val_ratio, test_ratio = 0.6, 0.2, 0.2

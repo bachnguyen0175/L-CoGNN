@@ -43,7 +43,7 @@ class StudentTrainer:
 
         # Set default ratio if not provided
         if not hasattr(args, 'ratio'):
-            args.ratio = ["70_15_15"]
+            args.ratio = ["80_10_10"]
 
         self.nei_index, self.feats, self.mps, self.pos, self.label, self.idx_train, self.idx_val, self.idx_test = load_data(args.dataset, args.ratio, args.type_num)
         
@@ -159,6 +159,17 @@ class StudentTrainer:
         print(f"Student model: {student_params:,} parameters")
         print(f"Student compression ratio: {self.args.compression_ratio:.2f}")
         
+        # Check pruning status
+        print(f"Pruning enabled: {self.student.enable_pruning}")
+        if hasattr(self.student, 'mp_attention_mask'):
+            print(f"Attention masks initialized: MP={self.student.mp_attention_mask.shape}, SC={self.student.sc_attention_mask.shape}")
+        else:
+            print("Warning: Attention masks not found!")
+        
+        # Print initial sparsity stats
+        initial_sparsity = self.get_sparsity_stats()
+        print(f"Initial sparsity stats: {initial_sparsity}")
+        
     def get_contrastive_nodes(self, batch_size=1024):
         """Get random nodes for contrastive learning"""
         total_nodes = self.feats[0].size(0)
@@ -194,16 +205,55 @@ class StudentTrainer:
         
         return total_loss.item(), student_loss.item(), distill_loss.item()
     
-    def apply_progressive_pruning(self, epoch):
-        """Apply progressive pruning to student model"""
-        if hasattr(self.student, 'apply_progressive_pruning') and epoch > 0 and epoch % 10 == 0:
-            if epoch < 100:  # Only prune during first phase
+    def apply_progressive_attention_pruning(self, epoch):
+        """Apply progressive attention pruning with optimal timing"""
+        if not hasattr(self.student, 'apply_progressive_attention_pruning'):
+            print(f"DEBUG: Student model does not have apply_progressive_attention_pruning method")
+            return
+            
+        # Phase 1: Warm-up (epochs 0-19) - No pruning, let model stabilize
+        if epoch < 20:
+            if epoch == 0:
+                print(f"DEBUG: Pruning warm-up phase (epochs 0-19)")
+            return
+            
+        # Phase 2: Early pruning (epochs 20-49) - Gentle pruning start
+        elif epoch < 50:
+            if epoch % 5 == 0:  # Every 5 epochs
+                print(f"DEBUG: Applying early pruning at epoch {epoch}")
                 pruning_ratios = {
-                    'attention': 0.1,
-                    'embedding': 0.1,
-                    'metapath': 0.05
+                    'current_epoch': epoch - 20,  # Adjust for pruning start
+                    'max_epochs': 80,  # Total pruning epochs (50-20=30, plus 50 more)
+                    'min_attention_sparsity': 0.1,  # Start very gentle
+                    'max_attention_sparsity': 0.6,  # Target 60% sparsity
+                    'attention_sparsity_weight': 0.001  # Low weight initially
                 }
-                self.student.apply_progressive_pruning(pruning_ratios)
+                self.student.apply_progressive_attention_pruning(pruning_ratios)
+                
+        # Phase 3: Aggressive pruning (epochs 50-99) - Main pruning phase  
+        elif epoch < 100:
+            if epoch % 3 == 0:  # Every 3 epochs for more frequent updates
+                print(f"DEBUG: Applying aggressive pruning at epoch {epoch}")
+                pruning_ratios = {
+                    'current_epoch': epoch - 20,
+                    'max_epochs': 80,
+                    'min_attention_sparsity': 0.1,
+                    'max_attention_sparsity': 0.7,  # Higher target
+                    'attention_sparsity_weight': 0.005  # Standard weight
+                }
+                self.student.apply_progressive_attention_pruning(pruning_ratios)
+                
+        # Phase 4: Fine-tuning (epochs 100+) - Stabilize pruned model
+        else:
+            if epoch % 10 == 0:  # Less frequent updates
+                pruning_ratios = {
+                    'current_epoch': 80,  # Keep at max pruning
+                    'max_epochs': 80,
+                    'min_attention_sparsity': 0.1,
+                    'max_attention_sparsity': 0.8,  # Final high sparsity
+                    'attention_sparsity_weight': 0.002  # Reduce weight for stability
+                }
+                self.student.apply_progressive_attention_pruning(pruning_ratios)
     
     def validate(self):
         """Validate the model"""
@@ -270,8 +320,8 @@ class StudentTrainer:
             # Training step
             total_loss, student_loss, distill_loss = self.train_epoch()
             
-            # Apply progressive pruning
-            self.apply_progressive_pruning(epoch)
+            # Apply progressive attention pruning
+            self.apply_progressive_attention_pruning(epoch)
             
             # Validation step
             val_loss = self.validate()
@@ -281,7 +331,11 @@ class StudentTrainer:
                 sparsity_stats = self.get_sparsity_stats()
                 sparsity_info = ""
                 if sparsity_stats:
-                    sparsity_info = f" | Sparsity: Emb={sparsity_stats.get('embedding_sparsity', 0):.3f}, MP={sparsity_stats.get('metapath_sparsity', 0):.3f}"
+                    mp_att_sparsity = sparsity_stats.get('metapath_attention_sparsity', 1.0)
+                    sc_att_sparsity = sparsity_stats.get('schema_attention_sparsity', 1.0)
+                    mp_path_sparsity = sparsity_stats.get('metapath_path_sparsity', 1.0)
+                    sc_type_sparsity = sparsity_stats.get('schema_type_sparsity', 1.0)
+                    sparsity_info = f" | Sparsity: MP_Att={mp_att_sparsity:.3f}, SC_Att={sc_att_sparsity:.3f}, MP_Path={mp_path_sparsity:.3f}, SC_Type={sc_type_sparsity:.3f}"
                 
                 print(f"Epoch {epoch:4d}/{self.args.stage2_epochs} | "
                       f"Total Loss: {total_loss:.4f} | "
@@ -364,10 +418,6 @@ def main():
     # Parse arguments
     args = kd_params()
     args.train_student = True
-    
-    # Set default stage2 distillation weight if not set
-    if not hasattr(args, 'stage2_distill_weight'):
-        args.stage2_distill_weight = 0.8
     
     # Set random seeds
     torch.manual_seed(args.seed)

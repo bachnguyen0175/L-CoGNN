@@ -6,12 +6,12 @@ echo "==============================================="
 
 DATASET="acm"
 # Paths for checking (from scripts directory)
-TEACHER_MODEL_CHECK="../../results/models/teacher_heco_${DATASET}.pkl"
-MIDDLE_TEACHER_MODEL_CHECK="../../results/models/middle_teacher_heco_${DATASET}.pkl"
+TEACHER_MODEL_CHECK="../../results/teacher_heco_${DATASET}.pkl"
+MIDDLE_TEACHER_MODEL_CHECK="../../results/middle_teacher_heco_${DATASET}.pkl"
 
 # Paths for Python script (from code directory after cd ..)  
-TEACHER_MODEL="../results/models/teacher_heco_${DATASET}.pkl"
-MIDDLE_TEACHER_MODEL="../results/models/middle_teacher_heco_${DATASET}.pkl"
+TEACHER_MODEL="../results/teacher_heco_${DATASET}.pkl"
+MIDDLE_TEACHER_MODEL="../results/middle_teacher_heco_${DATASET}.pkl"
 
 # Check if middle teacher already exists
 if [ -f "$MIDDLE_TEACHER_MODEL_CHECK" ]; then
@@ -32,9 +32,9 @@ echo "Training middle teacher from teacher on GPU..."
 cd .. && PYTHONPATH=. ../.venv/bin/python training/train_middle_teacher.py \
     $DATASET \
     --hidden_dim=64 \
-    --stage1_epochs=1000 \
-    --patience=50 \
-    --lr=0.001 \
+    --stage1_epochs=300 \
+    --patience=30 \
+    --lr=0.0008 \
     --tau=0.8 \
     --feat_drop=0.3 \
     --attn_drop=0.5 \

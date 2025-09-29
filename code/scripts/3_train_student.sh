@@ -6,12 +6,12 @@ echo "==============================================="
 
 DATASET="acm"
 # Paths for checking (from scripts directory)
-MIDDLE_TEACHER_MODEL_CHECK="../../results/models/middle_teacher_heco_${DATASET}.pkl"
-STUDENT_MODEL_CHECK="../../results/models/student_heco_${DATASET}.pkl"
+MIDDLE_TEACHER_MODEL_CHECK="../../results/middle_teacher_heco_${DATASET}.pkl"
+STUDENT_MODEL_CHECK="../../results/student_heco_${DATASET}.pkl"
 
 # Paths for Python script (from code directory after cd ..)
-MIDDLE_TEACHER_MODEL="../results/models/middle_teacher_heco_${DATASET}.pkl"
-STUDENT_MODEL="../results/models/student_heco_${DATASET}.pkl"
+MIDDLE_TEACHER_MODEL="../results/middle_teacher_heco_${DATASET}.pkl"
+STUDENT_MODEL="../results/student_heco_${DATASET}.pkl"
 
 # Check if student model already exists
 if [ -f "$STUDENT_MODEL_CHECK" ]; then
@@ -33,8 +33,8 @@ cd .. && PYTHONPATH=. ../.venv/bin/python training/train_student.py \
     $DATASET \
     --hidden_dim=64 \
     --stage2_epochs=200 \
-    --patience=50 \
-    --lr=0.001 \
+    --patience=30 \
+    --lr=0.0008 \
     --tau=0.8 \
     --feat_drop=0.3 \
     --attn_drop=0.5 \
@@ -43,6 +43,7 @@ cd .. && PYTHONPATH=. ../.venv/bin/python training/train_student.py \
     --middle_teacher_path="$MIDDLE_TEACHER_MODEL" \
     --student_save_path="$STUDENT_MODEL" \
     --student_compression_ratio=0.5 \
+    --stage2_distill_weight=0.8 \
     --distill_from_middle \
     --use_embedding_kd \
     --use_heterogeneous_kd \

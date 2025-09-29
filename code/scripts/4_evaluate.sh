@@ -5,9 +5,9 @@ echo "🟣 Stage 4: Evaluation and Comparison"
 echo "===================================="
 
 DATASET="acm"
-TEACHER_MODEL="../../results/models/teacher_heco_${DATASET}.pkl"
-MIDDLE_TEACHER_MODEL="../../results/models/middle_teacher_heco_${DATASET}.pkl"
-STUDENT_MODEL="../../results/models/student_heco_${DATASET}.pkl"
+TEACHER_MODEL="../../results/teacher_heco_${DATASET}.pkl"
+MIDDLE_TEACHER_MODEL="../../results/middle_teacher_heco_${DATASET}.pkl"
+STUDENT_MODEL="../../results/student_heco_${DATASET}.pkl"
 
 # Check if all models exist
 missing_models=()
@@ -41,9 +41,9 @@ echo "Evaluating all models on GPU..."
 
 echo ""
 cd ..
-TEACHER_MODEL_EVAL="../results/models/teacher_heco_${DATASET}.pkl"
-MIDDLE_TEACHER_MODEL_EVAL="../results/models/middle_teacher_heco_${DATASET}.pkl"
-STUDENT_MODEL_EVAL="../results/models/student_heco_${DATASET}.pkl"
+TEACHER_MODEL_EVAL="../results/teacher_heco_${DATASET}.pkl"
+MIDDLE_TEACHER_MODEL_EVAL="../results/middle_teacher_heco_${DATASET}.pkl"
+STUDENT_MODEL_EVAL="../results/student_heco_${DATASET}.pkl"
 
 echo "📊 Running KD-specific evaluation..."
 PYTHONPATH=. ../.venv/bin/python evaluation/evaluate_kd.py \

@@ -40,7 +40,7 @@ class TeacherTrainer:
 
         # Set default ratio if not provided
         if not hasattr(args, 'ratio'):
-            args.ratio = ["70_15_15"]
+            args.ratio = ["80_10_10"]
 
         self.nei_index, self.feats, self.mps, self.pos, self.label, self.idx_train, self.idx_val, self.idx_test = load_data(args.dataset, args.ratio, args.type_num)
         
