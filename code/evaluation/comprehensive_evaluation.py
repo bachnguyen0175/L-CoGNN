@@ -68,7 +68,7 @@ class ComprehensiveEvaluator:
 
         # Set default ratio if not provided
         if not hasattr(self.args, 'ratio'):
-            self.args.ratio = ["60_20_20"]
+            self.args.ratio = ["80_10_10"]
 
         data = load_data(self.args.dataset, self.args.ratio, self.args.type_num)
 

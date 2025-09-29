@@ -41,7 +41,7 @@ class ModelEvaluator:
 
         # Set default ratio if not provided
         if not hasattr(args, 'ratio'):
-            args.ratio = ["60_20_20"]
+            args.ratio = ["80_10_10"]
 
         # Load data
         print(f"Loading {args.dataset} dataset...")

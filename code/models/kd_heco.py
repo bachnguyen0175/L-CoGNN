@@ -169,10 +169,10 @@ class MyHeCo(nn.Module):
         loss = self.contrast(z_mp, z_sc, pos)
         return loss
 
-    def get_embeds(self, feats, mps):
+    def get_embeds(self, feats, mps, detach: bool = True):
         z_mp = F.elu(self.fc_list[0](feats[0]))
         z_mp = self.mp(z_mp, mps)
-        return z_mp.detach()
+        return z_mp.detach() if detach else z_mp
 
     def get_representations(self, feats, mps, nei_index):
         """Get both meta-path and schema-level representations"""
@@ -295,10 +295,10 @@ class MiddleMyHeCo(nn.Module):
         total_loss = contrast_loss + total_reconstruction_loss
         return total_loss
 
-    def get_embeds(self, feats, mps):
+    def get_embeds(self, feats, mps, detach: bool = True):
         z_mp = F.elu(self.fc_list[0](feats[0]))
         z_mp = self.mp(z_mp, mps)
-        return z_mp.detach()
+        return z_mp.detach() if detach else z_mp
     
     def get_representations(self, feats, mps, nei_index):
         """Get both meta-path and schema-level representations"""
@@ -509,13 +509,13 @@ class StudentMyHeCo(nn.Module):
         
         return z_sc
 
-    def get_embeds(self, feats, mps):
+    def get_embeds(self, feats, mps, detach: bool = True):
         z_mp = F.elu(self.fc_list[0](feats[0]))
         if self.enable_pruning:
             z_mp = self._forward_with_metapath_attention_pruning(z_mp, mps)
         else:
             z_mp = self.mp(z_mp, mps)
-        return z_mp.detach()
+        return z_mp.detach() if detach else z_mp
     
     def get_representations(self, feats, mps, nei_index):
         """Get both meta-path and schema-level representations"""
@@ -587,7 +587,7 @@ class StudentMyHeCo(nn.Module):
     def get_attention_pruning_loss(self):
         """Calculate attention-focused pruning loss"""
         if not self.enable_pruning:
-            return torch.tensor(0.0)
+            return torch.tensor(0.0, device=next(self.parameters()).device)
         
         # Get attention masks
         mp_att_mask, mp_path_masks = self.get_metapath_attention_masks()
@@ -631,7 +631,7 @@ class StudentMyHeCo(nn.Module):
         if len(sc_type_masks) > 1:
             # Encourage at least 50% of types to remain active
             min_active_types = max(1, len(sc_type_masks) // 2)
-            active_types = torch.sum(sc_type_masks > 0.5)
+            active_types = int((sc_type_masks > 0.5).sum().item())
             if active_types < min_active_types:
                 structure_loss += (min_active_types - active_types) * 0.1
         
@@ -966,7 +966,7 @@ class MyHeCoKD(nn.Module):
         if distill_config is None:
             distill_config = get_distillation_config(kd_params())
         
-        # Get teacher representations (detached) - use single detached copy to prevent corruption
+        # Build detached copy of mps for teacher to prevent autograd graph bloat
         with torch.no_grad():
             # Create single detached copy for memory efficiency
             mps_detached = []
@@ -978,25 +978,20 @@ class MyHeCoKD(nn.Module):
                 else:
                     mps_detached.append(mp.detach())
 
-            # Determine which alignment strategy to use based on model types
-            teacher_type = type(teacher).__name__
-            student_type = type(student).__name__
-            
-            # For student training (Middle Teacher -> Student): Teacher aligns down to student
-            if hasattr(teacher, 'get_student_aligned_representations') and student_type == 'StudentMyHeCo':
-                print("Middle Teacher to Student alignment")
-                teacher_mp, teacher_sc = teacher.get_student_aligned_representations(feats, mps_detached, nei_index)
-                student_mp, student_sc = student.get_representations(feats, mps_detached, nei_index)
-            # For middle teacher training (Teacher -> Middle Teacher): Student aligns up to teacher  
-            elif hasattr(student, 'get_teacher_aligned_representations'):
-                print("Teacher to Middle Teacher alignment")
-                teacher_mp, teacher_sc = teacher.get_representations(feats, mps_detached, nei_index)
-                student_mp, student_sc = student.get_teacher_aligned_representations(feats, mps_detached, nei_index)
-            # Fallback: no alignment
-            else:
-                print("Fuck up some where")
-                teacher_mp, teacher_sc = teacher.get_representations(feats, mps_detached, nei_index)
-                student_mp, student_sc = student.get_representations(feats, mps_detached, nei_index)
+        # Determine which alignment strategy to use based on model types
+        teacher_type = type(teacher).__name__
+        student_type = type(student).__name__
+
+        # Compute teacher representations (detached) and student with gradients
+        if hasattr(teacher, 'get_student_aligned_representations') and student_type == 'StudentMyHeCo':
+            teacher_mp, teacher_sc = teacher.get_student_aligned_representations(feats, mps_detached, nei_index)
+            student_mp, student_sc = student.get_representations(feats, mps_detached, nei_index)
+        elif hasattr(student, 'get_teacher_aligned_representations'):
+            teacher_mp, teacher_sc = teacher.get_representations(feats, mps_detached, nei_index)
+            student_mp, student_sc = student.get_teacher_aligned_representations(feats, mps_detached, nei_index)
+        else:
+            teacher_mp, teacher_sc = teacher.get_representations(feats, mps_detached, nei_index)
+            student_mp, student_sc = student.get_representations(feats, mps_detached, nei_index)
         
         total_distill_loss = 0
         losses = {}

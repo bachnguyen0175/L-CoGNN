@@ -5,15 +5,18 @@ Stage 2 of hierarchical distillation: Middle Teacher → Student
 
 import os
 import torch
+import torch.nn as nn
 import numpy as np
 import sys
 import random
+from tqdm.auto import tqdm
 
 # Add utils to path
 sys.path.append('./utils')
 
 from models.kd_heco import MiddleMyHeCo, StudentMyHeCo, MyHeCoKD, count_parameters
 from models.kd_params import *
+from models.kd_params import get_distillation_config
 from utils.load_data import load_data
 from utils.evaluate import evaluate_node_classification
 
@@ -134,7 +137,7 @@ class StudentTrainer:
             nei_num=self.args.nei_num,
             tau=self.args.tau,
             lam=self.args.lam,
-            compression_ratio=self.args.compression_ratio,
+            compression_ratio=self.args.student_compression_ratio,
             enable_pruning=True
         ).to(self.device)
 
@@ -144,6 +147,8 @@ class StudentTrainer:
             student=self.student,
             middle_teacher=self.middle_teacher
         )
+        # Will add KD student head params to optimizer on first use
+        self._kd_head_added_to_optim = False
         
         # Initialize optimizer
         self.optimizer = torch.optim.Adam(
@@ -157,7 +162,7 @@ class StudentTrainer:
         student_params = count_parameters(self.student)
         print(f"Middle teacher model: {middle_params:,} parameters")
         print(f"Student model: {student_params:,} parameters")
-        print(f"Student compression ratio: {self.args.compression_ratio:.2f}")
+        print(f"Student compression ratio: {self.args.student_compression_ratio:.2f}")
         
         # Check pruning status
         print(f"Pruning enabled: {self.student.enable_pruning}")
@@ -190,10 +195,23 @@ class StudentTrainer:
         # Distillation loss from middle teacher
         if hasattr(self.args, 'middle_teacher_path') and os.path.exists(self.args.middle_teacher_path):
             train_nodes = self.get_contrastive_nodes()
+            # Build and pass distillation config using current args
+            distill_config = get_distillation_config(self.args)
+            distill_config['num_classes'] = self.nb_classes
             total_loss_with_distill, loss_dict = self.kd_framework.calc_distillation_loss(
-                self.feats, self.mps, self.nei_index, self.pos, nodes=train_nodes
+                self.feats, self.mps, self.nei_index, self.pos, nodes=train_nodes, distill_config=distill_config
             )
             distill_loss = loss_dict['distill_loss']
+            # Include KD student prediction head params in optimizer once available
+            if (not self._kd_head_added_to_optim and
+                hasattr(self.kd_framework, 'student_prediction_classifier') and
+                isinstance(self.kd_framework.student_prediction_classifier, nn.Module)):
+                self.optimizer.add_param_group({
+                    'params': self.kd_framework.student_prediction_classifier.parameters(),
+                    'lr': self.args.lr,
+                    'weight_decay': self.args.l2_coef
+                })
+                self._kd_head_added_to_optim = True
             total_loss = student_loss + self.args.stage2_distill_weight * distill_loss
         else:
             total_loss = student_loss
@@ -208,19 +226,15 @@ class StudentTrainer:
     def apply_progressive_attention_pruning(self, epoch):
         """Apply progressive attention pruning with optimal timing"""
         if not hasattr(self.student, 'apply_progressive_attention_pruning'):
-            print(f"DEBUG: Student model does not have apply_progressive_attention_pruning method")
             return
             
         # Phase 1: Warm-up (epochs 0-19) - No pruning, let model stabilize
         if epoch < 20:
-            if epoch == 0:
-                print(f"DEBUG: Pruning warm-up phase (epochs 0-19)")
             return
             
         # Phase 2: Early pruning (epochs 20-49) - Gentle pruning start
         elif epoch < 50:
             if epoch % 5 == 0:  # Every 5 epochs
-                print(f"DEBUG: Applying early pruning at epoch {epoch}")
                 pruning_ratios = {
                     'current_epoch': epoch - 20,  # Adjust for pruning start
                     'max_epochs': 80,  # Total pruning epochs (50-20=30, plus 50 more)
@@ -233,7 +247,6 @@ class StudentTrainer:
         # Phase 3: Aggressive pruning (epochs 50-99) - Main pruning phase  
         elif epoch < 100:
             if epoch % 3 == 0:  # Every 3 epochs for more frequent updates
-                print(f"DEBUG: Applying aggressive pruning at epoch {epoch}")
                 pruning_ratios = {
                     'current_epoch': epoch - 20,
                     'max_epochs': 80,
@@ -292,20 +305,19 @@ class StudentTrainer:
             'loss': self.best_loss,
             'args': self.args,
             'augmentation_config': self.augmentation_config,
-            'sparsity_stats': self.get_sparsity_stats()
+            'sparsity_stats': self.get_sparsity_stats(),
+            'compression_ratio': self.args.student_compression_ratio
         }
         
         # Save regular checkpoint
         if epoch % self.args.save_interval == 0:
             save_path = f"{self.args.student_save_path}_epoch_{epoch}.pkl"
             torch.save(checkpoint, save_path)
-            print(f"Model saved at epoch {epoch}: {save_path}")
         
         # Save best model
         if is_best:
             best_path = self.args.student_save_path
             torch.save(checkpoint, best_path)
-            print(f"Best student saved: {best_path}")
     
     def train(self):
         """Main training loop"""
@@ -316,7 +328,10 @@ class StudentTrainer:
         print(f"Augmentation config: {self.augmentation_config}")
         print("-" * 60)
         
-        for epoch in range(self.args.stage2_epochs):
+        progress_bar = tqdm(range(self.args.stage2_epochs), desc="Student Training", leave=False, dynamic_ncols=True)
+        for epoch in progress_bar:
+            # Epoch-level NumPy seeding for reproducibility of any np-based sampling
+            np.random.seed(self.args.seed + epoch)
             # Training step
             total_loss, student_loss, distill_loss = self.train_epoch()
             
@@ -325,23 +340,38 @@ class StudentTrainer:
             
             # Validation step
             val_loss = self.validate()
+
+            # Update progress bar with current metrics
+            postfix_dict = {
+                'total_loss': f"{total_loss:.4f}",
+                'student_loss': f"{student_loss:.4f}",
+                'distill_loss': f"{distill_loss:.4f}",
+                'val_loss': f"{val_loss:.4f}",
+                'best_loss': f"{self.best_loss:.4f}",
+                'patience': f"{self.patience_counter}/{self.args.patience}"
+            }
             
-            # Logging
+            # Add sparsity stats periodically
             if epoch % self.args.log_interval == 0:
                 sparsity_stats = self.get_sparsity_stats()
-                sparsity_info = ""
                 if sparsity_stats:
                     mp_att_sparsity = sparsity_stats.get('metapath_attention_sparsity', 1.0)
                     sc_att_sparsity = sparsity_stats.get('schema_attention_sparsity', 1.0)
-                    mp_path_sparsity = sparsity_stats.get('metapath_path_sparsity', 1.0)
-                    sc_type_sparsity = sparsity_stats.get('schema_type_sparsity', 1.0)
-                    sparsity_info = f" | Sparsity: MP_Att={mp_att_sparsity:.3f}, SC_Att={sc_att_sparsity:.3f}, MP_Path={mp_path_sparsity:.3f}, SC_Type={sc_type_sparsity:.3f}"
-                
-                print(f"Epoch {epoch:4d}/{self.args.stage2_epochs} | "
-                      f"Total Loss: {total_loss:.4f} | "
-                      f"Student Loss: {student_loss:.4f} | "
-                      f"Distill Loss: {distill_loss:.4f} | "
-                      f"Val Loss: {val_loss:.4f}{sparsity_info}")
+                    postfix_dict.update({
+                        'mp_att': f"{mp_att_sparsity:.3f}",
+                        'sc_att': f"{sc_att_sparsity:.3f}"
+                    })
+            
+            # Add evaluation metrics when available
+            if epoch % self.args.eval_interval == 0 and epoch > 0:
+                accuracy, macro_f1, micro_f1 = self.evaluate_downstream()
+                postfix_dict.update({
+                    'acc': f"{accuracy:.3f}",
+                    'macro_f1': f"{macro_f1:.3f}",
+                    'micro_f1': f"{micro_f1:.3f}"
+                })
+            
+            progress_bar.set_postfix(postfix_dict)
             
             # Check for improvement
             is_best = False
@@ -357,19 +387,8 @@ class StudentTrainer:
             if epoch % self.args.save_interval == 0 or is_best:
                 self.save_model(epoch, is_best)
             
-            # Downstream evaluation
-            if epoch % self.args.eval_interval == 0 and epoch > 0:
-                accuracy, macro_f1, micro_f1 = self.evaluate_downstream()
-                print(f"Epoch {epoch:4d} | Student Evaluation:")
-                print(f"  Accuracy: {accuracy:.4f}")
-                print(f"  Macro F1: {macro_f1:.4f}")
-                print(f"  Micro F1: {micro_f1:.4f}")
-                print("-" * 40)
-            
             # Early stopping
             if self.patience_counter >= self.args.patience:
-                print(f"Early stopping at epoch {epoch}")
-                print(f"Best loss: {self.best_loss:.4f} at epoch {self.best_epoch}")
                 break
         
         # Final evaluation

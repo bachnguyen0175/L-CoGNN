@@ -28,7 +28,8 @@ class inter_att(nn.Module):
             beta.append(attn_curr.matmul(sp.t()))
         beta = torch.cat(beta, dim=-1).view(-1)
         beta = self.softmax(beta)
-        print("sc ", beta.data.cpu().numpy())  # type-level attention
+        # Debug: type-level attention (disabled to reduce log noise)
+        # print("sc ", beta.data.cpu().numpy())
         z_mc = 0
         for i in range(len(embeds)):
             z_mc += embeds[i] * beta[i]

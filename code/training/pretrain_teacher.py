@@ -5,6 +5,7 @@ Teacher Model Pre-training Script for KD-HGRL
 import torch
 import numpy as np
 import sys
+from tqdm.auto import tqdm
 
 # Add utils to path
 sys.path.append('./utils')
@@ -154,13 +155,11 @@ class TeacherTrainer:
         if epoch % self.args.save_interval == 0:
             save_path = f"{self.args.teacher_save_path}_epoch_{epoch}.pkl"
             torch.save(checkpoint, save_path)
-            print(f"Model saved at epoch {epoch}: {save_path}")
         
         # Save best model
         if is_best:
             best_path = self.args.teacher_save_path
             torch.save(checkpoint, best_path)
-            print(f"Best model saved: {best_path}")
     
     def train(self):
         """Main training loop"""
@@ -169,18 +168,34 @@ class TeacherTrainer:
         print(f"Patience: {self.args.patience}")
         print("-" * 60)
         
-        for epoch in range(self.args.nb_epochs):
+        progress_bar = tqdm(range(self.args.nb_epochs), desc="Teacher Training", leave=False, dynamic_ncols=True)
+        for epoch in progress_bar:
+            # Epoch-level NumPy seeding for reproducibility of any np-based sampling
+            np.random.seed(self.args.seed + epoch)
             # Training step
             train_loss = self.train_epoch()
             
             # Validation step
             val_loss = self.validate()
+
+            # Update progress bar with current metrics
+            postfix_dict = {
+                'train_loss': f"{train_loss:.4f}", 
+                'val_loss': f"{val_loss:.4f}",
+                'best_loss': f"{self.best_loss:.4f}",
+                'patience': f"{self.patience_counter}/{self.args.patience}"
+            }
             
-            # Logging
-            if epoch % self.args.log_interval == 0:
-                print(f"Epoch {epoch:4d}/{self.args.nb_epochs} | "
-                      f"Train Loss: {train_loss:.4f} | "
-                      f"Val Loss: {val_loss:.4f}")
+            # Add evaluation metrics when available
+            if epoch % self.args.eval_interval == 0 and epoch > 0:
+                accuracy, macro_f1, micro_f1 = self.evaluate_downstream()
+                postfix_dict.update({
+                    'acc': f"{accuracy:.3f}",
+                    'macro_f1': f"{macro_f1:.3f}",
+                    'micro_f1': f"{micro_f1:.3f}"
+                })
+            
+            progress_bar.set_postfix(postfix_dict)
             
             # Check for improvement
             is_best = False
@@ -196,19 +211,8 @@ class TeacherTrainer:
             if epoch % self.args.save_interval == 0 or is_best:
                 self.save_model(epoch, is_best)
             
-            # Downstream evaluation
-            if epoch % self.args.eval_interval == 0 and epoch > 0:
-                accuracy, macro_f1, micro_f1 = self.evaluate_downstream()
-                print(f"Epoch {epoch:4d} | Downstream Evaluation:")
-                print(f"  Accuracy: {accuracy:.4f}")
-                print(f"  Macro F1: {macro_f1:.4f}")
-                print(f"  Micro F1: {micro_f1:.4f}")
-                print("-" * 40)
-            
             # Early stopping
             if self.patience_counter >= self.args.patience:
-                print(f"Early stopping at epoch {epoch}")
-                print(f"Best loss: {self.best_loss:.4f} at epoch {self.best_epoch}")
                 break
         
         # Final evaluation

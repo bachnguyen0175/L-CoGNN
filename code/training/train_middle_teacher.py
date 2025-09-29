@@ -8,15 +8,17 @@ import sys
 import os
 import torch
 import torch.optim as optim
+import torch.nn as nn
 import numpy as np
 import random
 import argparse
+from tqdm.auto import tqdm
 
 # Add utils to path
 sys.path.append('./utils')
 
 from models.kd_heco import MyHeCo, MiddleMyHeCo, MyHeCoKD, count_parameters
-from models.kd_params import kd_params
+from models.kd_params import kd_params, get_distillation_config
 from utils.load_data import load_data
 from utils.evaluate import evaluate_node_classification
 
@@ -144,6 +146,7 @@ class MiddleTeacherTrainer:
             student=None,
             middle_teacher=self.middle_teacher
         )
+        self._kd_head_added_to_optim = False
         
         # Initialize optimizer
         self.optimizer = torch.optim.Adam(
@@ -179,10 +182,22 @@ class MiddleTeacherTrainer:
         # Distillation loss from teacher
         if hasattr(self.args, 'teacher_model_path') and os.path.exists(self.args.teacher_model_path):
             train_nodes = self.get_contrastive_nodes()
+            distill_config = get_distillation_config(self.args)
+            distill_config['num_classes'] = self.nb_classes
             total_loss_with_distill, loss_dict = self.kd_framework.calc_distillation_loss(
-                self.feats, self.mps, self.nei_index, self.pos, nodes=train_nodes
+                self.feats, self.mps, self.nei_index, self.pos, nodes=train_nodes, distill_config=distill_config
             )
             distill_loss = loss_dict['distill_loss']
+            # Include KD prediction head params in optimizer once available
+            if (not self._kd_head_added_to_optim and
+                hasattr(self.kd_framework, 'student_prediction_classifier') and
+                isinstance(self.kd_framework.student_prediction_classifier, nn.Module)):
+                self.optimizer.add_param_group({
+                    'params': self.kd_framework.student_prediction_classifier.parameters(),
+                    'lr': self.args.lr,
+                    'weight_decay': self.args.l2_coef
+                })
+                self._kd_head_added_to_optim = True
             total_loss = student_loss + self.args.stage1_distill_weight * distill_loss
         else:
             total_loss = student_loss
@@ -231,13 +246,11 @@ class MiddleTeacherTrainer:
         if epoch % self.args.save_interval == 0:
             save_path = f"{self.args.middle_teacher_save_path}_epoch_{epoch}.pkl"
             torch.save(checkpoint, save_path)
-            print(f"Model saved at epoch {epoch}: {save_path}")
         
         # Save best model
         if is_best:
             best_path = self.args.middle_teacher_save_path
             torch.save(checkpoint, best_path)
-            print(f"Best middle teacher saved: {best_path}")
     
     def train(self):
         """Main training loop"""
@@ -248,24 +261,36 @@ class MiddleTeacherTrainer:
         print(f"Augmentation config: {self.augmentation_config}")
         print("-" * 60)
         
-        for epoch in range(self.args.stage1_epochs):
+        progress_bar = tqdm(range(self.args.stage1_epochs), desc="Middle Teacher Training", leave=False, dynamic_ncols=True)
+        for epoch in progress_bar:
+            # Epoch-level NumPy seeding for reproducibility of any np-based sampling
+            np.random.seed(self.args.seed + epoch)
             # Training step
             total_loss, student_loss, distill_loss = self.train_epoch()
             
             # Validation step
             val_loss = self.validate()
+
+            # Update progress bar with current metrics
+            postfix_dict = {
+                'total_loss': f"{total_loss:.4f}",
+                'student_loss': f"{student_loss:.4f}",
+                'distill_loss': f"{distill_loss:.4f}",
+                'val_loss': f"{val_loss:.4f}",
+                'best_loss': f"{self.best_loss:.4f}",
+                'patience': f"{self.patience_counter}/{self.args.patience}"
+            }
             
-            # Logging
-            if epoch % self.args.log_interval == 0:
-                aug_info = ""
-                if hasattr(self.middle_teacher, 'augmentation_pipeline'):
-                    aug_info = f" | Aug: Mask={self.augmentation_config['use_node_masking']}, AE={self.augmentation_config['use_autoencoder']}"
-                
-                print(f"Epoch {epoch:4d}/{self.args.stage1_epochs} | "
-                      f"Total Loss: {total_loss:.4f} | "
-                      f"Student Loss: {student_loss:.4f} | "
-                      f"Distill Loss: {distill_loss:.4f} | "
-                      f"Val Loss: {val_loss:.4f}{aug_info}")
+            # Add evaluation metrics when available
+            if epoch % self.args.eval_interval == 0 and epoch > 0:
+                accuracy, macro_f1, micro_f1 = self.evaluate_downstream()
+                postfix_dict.update({
+                    'acc': f"{accuracy:.3f}",
+                    'macro_f1': f"{macro_f1:.3f}",
+                    'micro_f1': f"{micro_f1:.3f}"
+                })
+            
+            progress_bar.set_postfix(postfix_dict)
             
             # Check for improvement
             is_best = False
@@ -281,19 +306,8 @@ class MiddleTeacherTrainer:
             if epoch % self.args.save_interval == 0 or is_best:
                 self.save_model(epoch, is_best)
             
-            # Downstream evaluation
-            if epoch % self.args.eval_interval == 0 and epoch > 0:
-                accuracy, macro_f1, micro_f1 = self.evaluate_downstream()
-                print(f"Epoch {epoch:4d} | Middle Teacher Evaluation:")
-                print(f"  Accuracy: {accuracy:.4f}")
-                print(f"  Macro F1: {macro_f1:.4f}")
-                print(f"  Micro F1: {micro_f1:.4f}")
-                print("-" * 40)
-            
             # Early stopping
             if self.patience_counter >= self.args.patience:
-                print(f"Early stopping at epoch {epoch}")
-                print(f"Best loss: {self.best_loss:.4f} at epoch {self.best_epoch}")
                 break
         
         # Final evaluation
