@@ -103,7 +103,6 @@ class StudentTrainer:
             'mask_rate': getattr(self.args, 'mask_rate', 0.15),  # Higher for better robustness
             'remask_rate': getattr(self.args, 'remask_rate', 0.25),
             'connection_strength': getattr(self.args, 'connection_strength', 0.2),  # NEW: Meta-path connection strength
-            'edge_drop_rate': getattr(self.args, 'edge_drop_rate', 0.05),
             'num_remasking': getattr(self.args, 'num_remasking', 3),  # More remasking for expert training
             'autoencoder_hidden_dim': self.args.hidden_dim // 2,
             'autoencoder_layers': 3,  # Deeper for better learning
@@ -376,32 +375,9 @@ class StudentTrainer:
                 
                 kd_loss = (info_nce_mp + info_nce_sc + kl_mp + kl_sc) * 0.25
         
-        # Middle teacher knowledge distillation (prioritize the better performing teacher!)
-        if self.middle_teacher:
-            with torch.no_grad():
-                middle_teacher_mp, middle_teacher_sc = self.middle_teacher.get_representations(
-                    self.feats, self.mps, self.nei_index, use_augmentation=False
-                )
-            
-            # Get student representations aligned to middle teacher dimensions
-            student_mp, student_sc = self.student.get_teacher_aligned_representations(
-                self.feats, self.mps, self.nei_index, middle_teacher_guidance
-            )
-            
-            # Enhanced distillation from the BETTER middle teacher
-            from models.kd_heco import infoNCE, KLDiverge
-            
-            # InfoNCE contrastive distillation from middle teacher
-            middle_info_nce_mp = infoNCE(student_mp, middle_teacher_mp.detach(), 
-                                        contrastive_nodes, temperature=3.0)  # Lower temp for better teacher
-            middle_info_nce_sc = infoNCE(student_sc, middle_teacher_sc.detach(), 
-                                        contrastive_nodes, temperature=3.0)
-            
-            # KL divergence from middle teacher
-            middle_kl_mp = KLDiverge(middle_teacher_mp.detach(), student_mp, temperature=3.0)
-            middle_kl_sc = KLDiverge(middle_teacher_sc.detach(), student_sc, temperature=3.0)
-            
-            middle_kd_loss = (middle_info_nce_mp + middle_info_nce_sc + middle_kl_mp + middle_kl_sc) * 0.25
+        # Middle teacher: ONLY for pruning guidance (NO knowledge distillation)
+        # The middle teacher should focus purely on providing structural pruning guidance
+        # All knowledge distillation comes from the main teacher only
         
         # 4. Subspace contrastive loss for better representation learning
         subspace_loss = torch.tensor(0.0, device=self.device)
@@ -430,21 +406,20 @@ class StudentTrainer:
         # 5. Enhanced loss weighting - prioritize the BETTER teacher!
         total_loss = student_loss
         
-        # Since middle teacher (91.56%) > main teacher (88.59%), prioritize middle teacher
+        # Proper role assignment: Main teacher for knowledge distillation, middle teacher for pruning only
         if self.teacher and self.middle_teacher:
-            # Adaptive weighting - prioritize the BETTER performing teacher
-            main_kd_weight = self.args.stage2_distill_weight * 0.3  # Reduce main teacher influence
-            middle_kd_weight = 1.0  # Strong weight for better teacher's knowledge distillation
-            middle_pruning_weight = getattr(self.args, 'pruning_weight', 0.5)  # Moderate pruning guidance
+            # Main teacher: Primary knowledge distillation (full weight)
+            main_kd_weight = self.args.stage2_distill_weight  # Full distillation weight for main teacher
+            middle_pruning_weight = getattr(self.args, 'pruning_weight', 0.3)  # Pruning guidance only
             
-            total_loss += main_kd_weight * kd_loss  # Main teacher KD (weaker)
-            total_loss += middle_kd_weight * middle_kd_loss  # Middle teacher KD (stronger!)
-            total_loss += middle_pruning_weight * pruning_loss  # Pruning guidance
+            total_loss += main_kd_weight * kd_loss  # Main teacher KD (primary knowledge source)
+            # NO middle teacher knowledge distillation - only pruning guidance
+            total_loss += middle_pruning_weight * pruning_loss  # Pruning guidance only
             
             if not hasattr(self, '_log_counter'):
                 self._log_counter = 0
             if self._log_counter % 20 == 0:  # Log every 20 steps
-                print(f"Loss weights - main_kd: {main_kd_weight:.2f}, middle_kd: {middle_kd_weight:.2f}, pruning: {middle_pruning_weight:.2f}")
+                print(f"Loss weights - main_kd: {main_kd_weight:.2f}, pruning_only: {middle_pruning_weight:.2f} (no middle_kd)")
             self._log_counter += 1
             
         elif self.teacher:
@@ -464,7 +439,7 @@ class StudentTrainer:
         self.optimizer.step()
         
         return (total_loss.item(), student_loss.item(), kd_loss.item(), 
-                middle_kd_loss.item(), pruning_loss.item(), subspace_loss.item())
+                pruning_loss.item(), subspace_loss.item())
     
 
     
@@ -531,26 +506,22 @@ class StudentTrainer:
             # Enhanced training step with dual-teacher guidance, distillation, and pruning
             loss_tuple = self.train_epoch()
             
-            # Handle different return formats
-            if len(loss_tuple) == 6:
-                total_loss, student_loss, kd_loss, middle_kd_loss, pruning_loss, subspace_loss = loss_tuple
-            elif len(loss_tuple) == 5:
+            # Handle different return formats (no more middle teacher KD)
+            if len(loss_tuple) == 5:
                 total_loss, student_loss, kd_loss, pruning_loss, subspace_loss = loss_tuple
-                middle_kd_loss = 0.0
             else:
                 total_loss, student_loss, kd_loss = loss_tuple
-                middle_kd_loss = pruning_loss = subspace_loss = 0.0
+                pruning_loss = subspace_loss = 0.0
             
             # Validation step
             val_loss = self.validate()
 
-            # Update progress bar with enhanced metrics including middle teacher KD
+            # Update progress bar with corrected metrics (main teacher KD + middle teacher pruning)
             postfix_dict = {
                 'total': f"{total_loss:.4f}",
                 'student': f"{student_loss:.4f}",
-                'main_kd': f"{kd_loss:.4f}",
-                'mid_kd': f"{middle_kd_loss:.4f}",  # Middle teacher KD (should be higher impact)
-                'prune': f"{pruning_loss:.4f}",
+                'main_kd': f"{kd_loss:.4f}",  # Main teacher knowledge distillation
+                'prune': f"{pruning_loss:.4f}",  # Middle teacher pruning guidance only
                 'subspace': f"{subspace_loss:.4f}",
                 'val': f"{val_loss:.4f}",
                 'best': f"{self.best_loss:.4f}",

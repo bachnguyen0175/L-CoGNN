@@ -1,88 +1,89 @@
 #!/bin/bash
-
-# Stage 3: Dual-Teacher Student Training (Main Teacher + Pruning Expert)
-echo "🟠 Stage 3: Dual-Teacher Student Training"
-echo "========================================="
-echo "Main Teacher: Knowledge Distillation (trained on original data)"
-echo "Pruning Expert: Pruning Guidance (trained on augmented data)"
-echo "========================================="
-
-DATASET="acm"
-# Paths for checking (from scripts directory)
-TEACHER_MODEL_CHECK="../../results/teacher_heco_${DATASET}.pkl"
-MIDDLE_TEACHER_MODEL_CHECK="../../results/middle_teacher_heco_${DATASET}.pkl"
-STUDENT_MODEL_CHECK="../../results/student_heco_${DATASET}.pkl"
-
-# Paths for Python script (from code directory after cd ..)
-TEACHER_MODEL="../results/teacher_heco_${DATASET}.pkl"
-MIDDLE_TEACHER_MODEL="../results/middle_teacher_heco_${DATASET}.pkl"
-STUDENT_MODEL="../results/student_heco_${DATASET}.pkl"
-
-# Check if student model already exists
-if [ -f "$STUDENT_MODEL_CHECK" ]; then
-    echo "✅ Student model already exists: $STUDENT_MODEL_CHECK"
-    echo "Delete the file if you want to retrain."
-    exit 0
-fi
+# Dual-Teacher Student Training Script
+# Train student model using both teachers:
+# 1. Main Teacher: Provides knowledge distillation (trained on original data)  
+# 2. Middle Teacher: Provides pruning guidance (trained on augmented data)
+echo "🟡 Stage 3: Training Student with Dual-Teacher Guidance"
+echo "========================================================"
 
 # Check if required models exist
-MODELS_MISSING=false
-
-if [ ! -f "$TEACHER_MODEL_CHECK" ]; then
-    echo "⚠️  Main teacher model not found: $TEACHER_MODEL_CHECK"
-    echo "   Training without knowledge distillation"
-    MODELS_MISSING=true
+if [ ! -f "../../results/teacher_heco_acm.pkl" ]; then
+    echo "❌ Main teacher model not found: ../../results/teacher_heco_acm.pkl"
+    echo "   Please train the main teacher first using: bash 1_train_teacher.sh"
+    exit 1
 fi
 
-if [ ! -f "$MIDDLE_TEACHER_MODEL_CHECK" ]; then
-    echo "⚠️  Pruning expert model not found: $MIDDLE_TEACHER_MODEL_CHECK"
-    echo "   Training without pruning guidance"
-    MODELS_MISSING=true
+if [ ! -f "../../results/middle_teacher_heco_acm.pkl" ]; then
+    echo "❌ Middle teacher model not found: ../../results/middle_teacher_heco_acm.pkl"
+    echo "   Please train the middle teacher first using: bash 2_train_middle_teacher.sh"
+    exit 1
 fi
 
-if [ "$MODELS_MISSING" = true ]; then
-    echo ""
-    echo "📝 Recommendation: Run previous stages for full dual-teacher training:"
-    echo "   1_train_teacher.sh (for knowledge distillation)"
-    echo "   2_train_middle_teacher.sh (for pruning guidance)"
-    echo ""
-    read -p "Continue with available models? [y/N]: " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Cancelled by user"
-        exit 1
-    fi
+echo "✅ Both teacher models found"
+echo "🚀 Starting dual-teacher student training..."
+
+# Check for GPU
+if command -v nvidia-smi &> /dev/null; then
+    echo "GPU detected, using CUDA acceleration"
+    GPU_FLAG="--gpu 0"
+else
+    echo "No GPU detected, using CPU"
+    GPU_FLAG="--gpu -1"
 fi
 
-echo "Starting dual-teacher student training on GPU..."
-if [ -f "$TEACHER_MODEL_CHECK" ]; then
-    echo "✅ Using main teacher for knowledge distillation"
-fi
-if [ -f "$MIDDLE_TEACHER_MODEL_CHECK" ]; then
-    echo "✅ Using pruning expert for guidance"
-fi
+# Training configuration
+DATASET="acm"
+TEACHER_PATH="../../results/teacher_heco_acm.pkl"
+MIDDLE_TEACHER_PATH="../../results/middle_teacher_heco_acm.pkl"
+STUDENT_SAVE_PATH="../../results/student_heco_acm.pkl"
 
-cd .. && PYTHONPATH=. ../.venv/bin/python training/train_student.py \
-    $DATASET \
-    --hidden_dim=64 \
-    --stage2_epochs=200 \
-    --teacher_model_path="$TEACHER_MODEL" \
-    --patience=30 \
-    --lr=0.0008 \
-    --tau=0.8 \
-    --feat_drop=0.3 \
-    --attn_drop=0.5 \
-    --sample_rate 7 1 \
-    --lam=0.5 \
-    --middle_teacher_path="$MIDDLE_TEACHER_MODEL" \
-    --student_save_path="$STUDENT_MODEL" \
-    --cuda \
-    --seed=42
+# Student training parameters - main teacher for KD, middle teacher for pruning only
+STUDENT_EPOCHS=500
+STUDENT_LR=0.0008
+STUDENT_COMPRESSION=0.6  # Less aggressive compression for better learning
+DISTILL_WEIGHT=0.8       # Full weight for main teacher knowledge distillation
+PRUNING_WEIGHT=0.3       # Moderate weight for middle teacher pruning guidance
+
+echo "Configuration:"
+echo "  Dataset: $DATASET"
+echo "  Student epochs: $STUDENT_EPOCHS"
+echo "  Student compression: $STUDENT_COMPRESSION"
+echo "  Main teacher KD weight: $DISTILL_WEIGHT (knowledge distillation)"
+echo "  Middle teacher pruning weight: $PRUNING_WEIGHT (pruning guidance only)"
+echo "  Teacher path: $TEACHER_PATH"
+echo "  Middle teacher path: $MIDDLE_TEACHER_PATH"
+echo ""
+
+# Run dual-teacher student training
+python ../training/train_student.py \
+    --dataset $DATASET \
+    --teacher_model_path $TEACHER_PATH \
+    --middle_teacher_path $MIDDLE_TEACHER_PATH \
+    --student_save_path $STUDENT_SAVE_PATH \
+    --stage2_epochs $STUDENT_EPOCHS \
+    --lr $STUDENT_LR \
+    --stage2_distill_weight $DISTILL_WEIGHT \
+    --pruning_weight $PRUNING_WEIGHT \
+    --student_compression_ratio $STUDENT_COMPRESSION \
+    --kd_temperature 3.0 \
+    --patience 30 \
+    --save_interval 20 \
+    --eval_interval 10 \
+    --log_interval 5 \
+    $GPU_FLAG
 
 if [ $? -eq 0 ]; then
-    echo "✅ Student training completed!"
-    echo "📁 Model saved: $STUDENT_MODEL"
+    echo ""
+    echo "✅ Dual-teacher student training completed successfully!"
+    echo "📁 Student model saved to: $STUDENT_SAVE_PATH"
+    echo ""
+    echo "📊 Model Summary:"
+    echo "   - Main Teacher: Primary knowledge distillation source"
+    echo "   - Middle Teacher: Structural pruning guidance only (NO knowledge distillation)"
+    echo "   - Student: Knowledge from main teacher + pruning guidance from middle teacher"
+    echo ""
+    echo "🎯 Next Step: Evaluate the student model using bash 4_evaluate.sh"
 else
-    echo "❌ Student training failed!"
+    echo "❌ Dual-teacher student training failed!"
     exit 1
 fi
