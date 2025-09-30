@@ -1,15 +1,20 @@
 #!/bin/bash
 
-# Stage 3: Student Training from Middle Teacher
-echo "🟠 Stage 3: Training Student from Middle Teacher"
-echo "==============================================="
+# Stage 3: Dual-Teacher Student Training (Main Teacher + Pruning Expert)
+echo "🟠 Stage 3: Dual-Teacher Student Training"
+echo "========================================="
+echo "Main Teacher: Knowledge Distillation (trained on original data)"
+echo "Pruning Expert: Pruning Guidance (trained on augmented data)"
+echo "========================================="
 
 DATASET="acm"
 # Paths for checking (from scripts directory)
+TEACHER_MODEL_CHECK="../../results/teacher_heco_${DATASET}.pkl"
 MIDDLE_TEACHER_MODEL_CHECK="../../results/middle_teacher_heco_${DATASET}.pkl"
 STUDENT_MODEL_CHECK="../../results/student_heco_${DATASET}.pkl"
 
 # Paths for Python script (from code directory after cd ..)
+TEACHER_MODEL="../results/teacher_heco_${DATASET}.pkl"
 MIDDLE_TEACHER_MODEL="../results/middle_teacher_heco_${DATASET}.pkl"
 STUDENT_MODEL="../results/student_heco_${DATASET}.pkl"
 
@@ -21,18 +26,47 @@ if [ -f "$STUDENT_MODEL_CHECK" ]; then
 fi
 
 # Check if required models exist
-if [ ! -f "$MIDDLE_TEACHER_MODEL_CHECK" ]; then
-    echo "❌ Middle teacher model not found: $MIDDLE_TEACHER_MODEL_CHECK"
-    echo "Please run 2_train_middle_teacher.sh first"
-    exit 1
+MODELS_MISSING=false
+
+if [ ! -f "$TEACHER_MODEL_CHECK" ]; then
+    echo "⚠️  Main teacher model not found: $TEACHER_MODEL_CHECK"
+    echo "   Training without knowledge distillation"
+    MODELS_MISSING=true
 fi
 
-echo "Training student from middle teacher on GPU..."
+if [ ! -f "$MIDDLE_TEACHER_MODEL_CHECK" ]; then
+    echo "⚠️  Pruning expert model not found: $MIDDLE_TEACHER_MODEL_CHECK"
+    echo "   Training without pruning guidance"
+    MODELS_MISSING=true
+fi
+
+if [ "$MODELS_MISSING" = true ]; then
+    echo ""
+    echo "📝 Recommendation: Run previous stages for full dual-teacher training:"
+    echo "   1_train_teacher.sh (for knowledge distillation)"
+    echo "   2_train_middle_teacher.sh (for pruning guidance)"
+    echo ""
+    read -p "Continue with available models? [y/N]: " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Cancelled by user"
+        exit 1
+    fi
+fi
+
+echo "Starting dual-teacher student training on GPU..."
+if [ -f "$TEACHER_MODEL_CHECK" ]; then
+    echo "✅ Using main teacher for knowledge distillation"
+fi
+if [ -f "$MIDDLE_TEACHER_MODEL_CHECK" ]; then
+    echo "✅ Using pruning expert for guidance"
+fi
 
 cd .. && PYTHONPATH=. ../.venv/bin/python training/train_student.py \
     $DATASET \
     --hidden_dim=64 \
     --stage2_epochs=200 \
+    --teacher_model_path="$TEACHER_MODEL" \
     --patience=30 \
     --lr=0.0008 \
     --tau=0.8 \
@@ -42,25 +76,6 @@ cd .. && PYTHONPATH=. ../.venv/bin/python training/train_student.py \
     --lam=0.5 \
     --middle_teacher_path="$MIDDLE_TEACHER_MODEL" \
     --student_save_path="$STUDENT_MODEL" \
-    --student_compression_ratio=0.5 \
-    --stage2_distill_weight=0.8 \
-    --distill_from_middle \
-    --use_embedding_kd \
-    --use_heterogeneous_kd \
-    --use_multi_level_kd \
-    --use_progressive_pruning \
-    --use_multi_stage \
-    --embedding_weight=0.5 \
-    --heterogeneous_weight=0.3 \
-    --multi_level_weight=0.4 \
-    --subspace_weight=0.3 \
-    --embedding_temp=4.0 \
-    --mask_epochs=100 \
-    --fixed_epochs=100 \
-    --pruning_start=10 \
-    --pruning_interval=10 \
-    --emb_prune_ratio=0.1 \
-    --mp_prune_ratio=0.05 \
     --cuda \
     --seed=42
 

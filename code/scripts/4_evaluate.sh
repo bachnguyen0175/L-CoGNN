@@ -71,11 +71,6 @@ if [ $? -eq 0 ]; then
     echo "   Teacher:        $TEACHER_MODEL"
     echo "   Middle Teacher: $MIDDLE_TEACHER_MODEL"
     echo "   Student:        $STUDENT_MODEL"
-    echo ""
-    echo "🎯 Compression Analysis:"
-    echo "   Teacher → Middle: ~30% compression"
-    echo "   Middle → Student: ~50% compression"
-    echo "   Overall:         ~65% parameter reduction"
 else
     echo "❌ Evaluation failed!"
     exit 1

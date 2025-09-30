@@ -34,12 +34,10 @@ def kd_params():
     parser.add_argument('--student_model_path', type=str, default=None, help="Path to pre-trained student model")
     
     # Student model configuration
-    parser.add_argument('--compression_ratio', type=float, default=0.5, help="Student model compression ratio")
     parser.add_argument('--student_layers', type=int, default=None, help="Number of layers in student model")
     
     # Distillation loss weights
     parser.add_argument('--embedding_weight', type=float, default=0.5, help="Weight for embedding-level distillation")
-    parser.add_argument('--heterogeneous_weight', type=float, default=0.3, help="Weight for heterogeneous distillation")
     parser.add_argument('--prediction_weight', type=float, default=0.8, help="Weight for prediction-level distillation")
     
     # Distillation temperatures
@@ -48,7 +46,6 @@ def kd_params():
     
     # Distillation flags
     parser.add_argument('--use_embedding_kd', action='store_true', default=True, help="Use embedding-level KD")
-    parser.add_argument('--use_heterogeneous_kd', action='store_true', default=True, help="Use heterogeneous KD")
     parser.add_argument('--use_prediction_kd', action='store_true', default=True, help="Use prediction-level KD")
     parser.add_argument('--use_self_contrast', action='store_true', default=True, help="Use self-contrast loss from LightGNN")
     parser.add_argument('--use_subspace_contrast', action='store_true', default=True, help="Use subspace contrastive learning")
@@ -71,9 +68,6 @@ def kd_params():
     parser.add_argument('--pruning_end', type=int, default=5, help="End pruning run")
     parser.add_argument('--use_loosening', action='store_true', default=True, help="Use loosening factors in subspace learning")
     
-    # Enhanced training mode
-    parser.add_argument('--use_enhanced_training', action='store_true', default=False, help="Use enhanced training with all LightGNN techniques")
-    
     # Model saving
     parser.add_argument('--teacher_save_path', type=str, default="teacher_heco.pkl", help="Teacher model save path")
     parser.add_argument('--student_save_path', type=str, default="student_heco.pkl", help="Student model save path")
@@ -84,18 +78,28 @@ def kd_params():
     parser.add_argument('--stage2_epochs', type=int, default=300, help='Epochs for stage 2 (middle teacher -> student)')
     parser.add_argument('--stage1_distill_weight', type=float, default=0.7, help='Distillation weight for stage 1')
     parser.add_argument('--stage2_distill_weight', type=float, default=0.8, help='Distillation weight for stage 2')
-    parser.add_argument('--middle_compression_ratio', type=float, default=0.7, help='Compression ratio for middle teacher')
     parser.add_argument('--student_compression_ratio', type=float, default=0.5, help='Compression ratio for student')
     
-    # Simplified Augmentation parameters
+    # Dual-Teacher System parameters
+    parser.add_argument('--expert_alignment_weight', type=float, default=0.1, help='Weight for expert alignment loss')
+    parser.add_argument('--pruning_weight', type=float, default=0.3, help='Weight for pruning guidance loss')
+    
+    # Enhanced Knowledge Distillation parameters
+    parser.add_argument('--kd_temperature', type=float, default=4.0, help='Temperature for knowledge distillation')
+    parser.add_argument('--use_kl_div', action='store_true', default=True, help='Use KL divergence for soft targets')
+    parser.add_argument('--use_info_nce', action='store_true', default=True, help='Use InfoNCE contrastive loss')
+    parser.add_argument('--subspace_loss_weight', type=float, default=0.1, help='Weight for subspace contrastive loss')
+    
+    # Enhanced Augmentation parameters for Dual-Teacher System
     parser.add_argument('--use_node_masking', action='store_true', default=True, help="Use node feature masking augmentation")
-    parser.add_argument('--use_edge_augmentation', action='store_true', default=True, help="Use edge dropping augmentation")
+    parser.add_argument('--use_meta_path_connections', action='store_true', default=True, help="Connect all nodes via meta-paths")
     parser.add_argument('--use_autoencoder', action='store_true', default=True, help="Use autoencoder reconstruction")
-    parser.add_argument('--mask_rate', type=float, default=0.1, help="Node masking rate")
-    parser.add_argument('--remask_rate', type=float, default=0.3, help="Remasking rate during decoding")
-    parser.add_argument('--edge_drop_rate', type=float, default=0.1, help="Edge dropping rate")
-    parser.add_argument('--num_remasking', type=int, default=2, help="Number of remasking iterations")
-    parser.add_argument('--reconstruction_weight', type=float, default=0.1, help="Weight for reconstruction loss")
+    parser.add_argument('--mask_rate', type=float, default=0.15, help="Node masking rate (higher for robustness)")
+    parser.add_argument('--remask_rate', type=float, default=0.25, help="Remasking rate during decoding")
+    parser.add_argument('--connection_strength', type=float, default=0.2, help="Meta-path connection strength")
+    parser.add_argument('--edge_drop_rate', type=float, default=0.05, help="Edge dropping rate")
+    parser.add_argument('--num_remasking', type=int, default=3, help="Number of remasking iterations")
+    parser.add_argument('--reconstruction_weight', type=float, default=0.2, help="Weight for reconstruction loss")
     
     # Logging and evaluation
     parser.add_argument('--log_interval', type=int, default=10, help="Logging interval")
@@ -131,7 +135,6 @@ def get_distillation_config(args):
     return {
         'use_embedding_kd': args.use_embedding_kd,
         'use_prediction_kd': args.use_prediction_kd,
-        'use_heterogeneous_kd': args.use_heterogeneous_kd,
         'use_self_contrast': getattr(args, 'use_self_contrast', True),
         'use_subspace_contrast': getattr(args, 'use_subspace_contrast', True),
         'use_multi_level_kd': getattr(args, 'use_multi_level_kd', True),
@@ -141,7 +144,6 @@ def get_distillation_config(args):
         'subspace_temp': getattr(args, 'subspace_temp', 1.0),
         'embedding_weight': args.embedding_weight,
         'prediction_weight': args.prediction_weight,
-        'heterogeneous_weight': args.heterogeneous_weight,
         'self_contrast_weight': getattr(args, 'self_contrast_weight', 0.2),
         'subspace_weight': getattr(args, 'subspace_weight', 0.3),
         'multi_level_weight': getattr(args, 'multi_level_weight', 0.4),
@@ -162,9 +164,7 @@ def acm_kd_params():
     args.attn_drop = 0.5
     args.sample_rate = [7, 1]
     args.lam = 0.5
-    args.compression_ratio = 0.5
     args.embedding_weight = 0.5
-    args.heterogeneous_weight = 0.3
     args.embedding_temp = 4.0
     return args
 
@@ -181,9 +181,7 @@ def dblp_kd_params():
     args.attn_drop = 0.6
     args.sample_rate = [8, 2, 1]
     args.lam = 0.6
-    args.compression_ratio = 0.4
     args.embedding_weight = 0.6
-    args.heterogeneous_weight = 0.4
     args.embedding_temp = 3.0
     return args
 
@@ -207,7 +205,6 @@ def get_student_config(args):
     """Configuration for student model training"""
     return {
         'hidden_dim': args.hidden_dim,
-        'compression_ratio': args.compression_ratio,
         'feat_drop': args.feat_drop,
         'attn_drop': args.attn_drop,
         'tau': args.tau,

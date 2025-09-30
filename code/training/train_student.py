@@ -6,18 +6,27 @@ Stage 2 of hierarchical distillation: Middle Teacher → Student
 import os
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 import sys
 import random
 from tqdm.auto import tqdm
 
-# Add utils to path
-sys.path.append('./utils')
+# Add project root and code directory to path for imports
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+code_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
+sys.path.insert(0, code_dir)
 
-from models.kd_heco import MiddleMyHeCo, StudentMyHeCo, MyHeCoKD, count_parameters
-from models.kd_params import *
-from models.kd_params import get_distillation_config
-from utils.load_data import load_data
+try:
+    from models.kd_heco import MiddleMyHeCo, StudentMyHeCo, MyHeCoKD, count_parameters
+    from models.kd_params import kd_params, get_distillation_config
+    from utils.load_data import load_data
+except ImportError:
+    # Fallback for different execution contexts
+    from code.models.kd_heco import MiddleMyHeCo, StudentMyHeCo, MyHeCoKD, count_parameters
+    from code.models.kd_params import kd_params, get_distillation_config
+    from code.utils.load_data import load_data
 from utils.evaluate import evaluate_node_classification
 
 
@@ -85,22 +94,51 @@ class StudentTrainer:
             self.idx_test = [idx.to(self.device) for idx in self.idx_test]
     
     def init_models(self):
-        """Initialize middle teacher and student models"""
-        # Setup augmentation config for middle teacher
+        """Initialize both teachers (main + pruning expert) and student models"""
+        # Setup augmentation config for dual-teacher system (now with meta-path connections!)
         self.augmentation_config = {
             'use_node_masking': getattr(self.args, 'use_node_masking', True),
+            'use_meta_path_connections': getattr(self.args, 'use_meta_path_connections', True),  # NEW: Connect all nodes via meta-paths
             'use_autoencoder': getattr(self.args, 'use_autoencoder', True),
-            'mask_rate': getattr(self.args, 'mask_rate', 0.1),
-            'remask_rate': getattr(self.args, 'remask_rate', 0.2),
+            'mask_rate': getattr(self.args, 'mask_rate', 0.15),  # Higher for better robustness
+            'remask_rate': getattr(self.args, 'remask_rate', 0.25),
+            'connection_strength': getattr(self.args, 'connection_strength', 0.2),  # NEW: Meta-path connection strength
             'edge_drop_rate': getattr(self.args, 'edge_drop_rate', 0.05),
-            'num_remasking': getattr(self.args, 'num_remasking', 2),
+            'num_remasking': getattr(self.args, 'num_remasking', 3),  # More remasking for expert training
             'autoencoder_hidden_dim': self.args.hidden_dim // 2,
-            'autoencoder_layers': 2,
-            'reconstruction_weight': getattr(self.args, 'reconstruction_weight', 0.1)
+            'autoencoder_layers': 3,  # Deeper for better learning
+            'reconstruction_weight': getattr(self.args, 'reconstruction_weight', 0.2)  # Higher weight for reconstruction
         }
         
-        # Load pre-trained middle teacher
-        print("Loading pre-trained middle teacher...")
+        # Load pre-trained main teacher (trained on original data for knowledge distillation)
+        print("Loading pre-trained main teacher...")
+        from models.kd_heco import MyHeCo
+        self.teacher = MyHeCo(
+            hidden_dim=self.args.hidden_dim,
+            feats_dim_list=self.feats_dim_list,
+            feat_drop=self.args.feat_drop,
+            attn_drop=self.args.attn_drop,
+            P=self.P,
+            sample_rate=self.args.sample_rate,
+            nei_num=self.args.nei_num,
+            tau=self.args.tau,
+            lam=self.args.lam
+        ).to(self.device)
+
+        # Load teacher checkpoint
+        if hasattr(self.args, 'teacher_model_path') and os.path.exists(self.args.teacher_model_path):
+            teacher_checkpoint = torch.load(self.args.teacher_model_path, map_location=self.device)
+            if 'model_state_dict' in teacher_checkpoint:
+                self.teacher.load_state_dict(teacher_checkpoint['model_state_dict'])
+            else:
+                self.teacher.load_state_dict(teacher_checkpoint)
+            print(f"Loaded main teacher from: {self.args.teacher_model_path}")
+        else:
+            print("Warning: No main teacher model found. Training without knowledge distillation.")
+            self.teacher = None
+        
+        # Load pre-trained middle teacher (pruning expert trained on augmentation data)
+        print("Loading pre-trained pruning expert teacher...")
         self.middle_teacher = MiddleMyHeCo(
             feats_dim_list=self.feats_dim_list,
             hidden_dim=self.args.hidden_dim,
@@ -111,22 +149,59 @@ class StudentTrainer:
             nei_num=self.args.nei_num,
             tau=self.args.tau,
             lam=self.args.lam,
-            compression_ratio=self.args.middle_compression_ratio,
             augmentation_config=self.augmentation_config
         ).to(self.device)
 
-        # Load middle teacher checkpoint
+        # Load middle teacher checkpoint - handle compression dimension mismatch
         if hasattr(self.args, 'middle_teacher_path') and os.path.exists(self.args.middle_teacher_path):
             middle_checkpoint = torch.load(self.args.middle_teacher_path, map_location=self.device)
-            if 'model_state_dict' in middle_checkpoint:
-                self.middle_teacher.load_state_dict(middle_checkpoint['model_state_dict'])
-            else:
-                self.middle_teacher.load_state_dict(middle_checkpoint)
-            print(f"Loaded middle teacher from: {self.args.middle_teacher_path}")
+            
+            # Handle potential dimension mismatch due to compression
+            try:
+                if 'model_state_dict' in middle_checkpoint:
+                    self.middle_teacher.load_state_dict(middle_checkpoint['model_state_dict'])
+                else:
+                    self.middle_teacher.load_state_dict(middle_checkpoint)
+                print(f"Loaded middle teacher from: {self.args.middle_teacher_path}")
+            except RuntimeError as e:
+                if "size mismatch" in str(e):
+                    print(f"Dimension mismatch detected. Recreating middle teacher with correct dimensions...")
+                    # Detect actual hidden dimension from weights
+                    state_dict = middle_checkpoint.get('model_state_dict', middle_checkpoint)
+                    actual_hidden_dim = None
+                    for key, tensor in state_dict.items():
+                        if 'fc_list.0.weight' in key:
+                            actual_hidden_dim = tensor.shape[0]
+                            break
+                    
+                    if actual_hidden_dim:
+                        print(f"Recreating middle teacher with hidden_dim={actual_hidden_dim}")
+                        self.middle_teacher = MiddleMyHeCo(
+                            feats_dim_list=self.feats_dim_list,
+                            hidden_dim=actual_hidden_dim,
+                            attn_drop=self.args.attn_drop,
+                            feat_drop=self.args.feat_drop,
+                            P=self.P,
+                            sample_rate=self.args.sample_rate,
+                            nei_num=self.args.nei_num,
+                            tau=self.args.tau,
+                            lam=self.args.lam,
+                            augmentation_config=self.augmentation_config
+                        ).to(self.device)
+                        
+                        # Load with corrected dimensions
+                        self.middle_teacher.load_state_dict(state_dict)
+                        print(f"Successfully loaded middle teacher with corrected dimensions")
+                    else:
+                        raise e
+                else:
+                    raise e
         else:
-            print("Warning: No middle teacher model found. Training without pre-trained middle teacher.")
+            print("Warning: No middle teacher model found. Training without pruning guidance.")
+            self.middle_teacher = None
 
-        # Initialize student model
+        # Initialize student model with simplified dual-teacher guidance
+        use_middle_teacher_guidance = self.middle_teacher is not None
         self.student = StudentMyHeCo(
             hidden_dim=self.args.hidden_dim,
             feats_dim_list=self.feats_dim_list,
@@ -138,17 +213,30 @@ class StudentTrainer:
             tau=self.args.tau,
             lam=self.args.lam,
             compression_ratio=self.args.student_compression_ratio,
-            enable_pruning=True
+            use_middle_teacher_guidance=use_middle_teacher_guidance
         ).to(self.device)
 
-        # Setup KD framework - Middle Teacher to Student mode
+        # Setup Dual-Teacher KD framework 
+        # - Main Teacher: Knowledge distillation (learns from original data)
+        # - Middle Teacher (Pruning Expert): Pruning guidance (learns from augmented data)
+        # Note: MyHeCoKD is now an alias for DualTeacherKD with backward compatibility
         self.kd_framework = MyHeCoKD(
-            teacher=None,
-            student=self.student,
-            middle_teacher=self.middle_teacher
-        )
-        # Will add KD student head params to optimizer on first use
-        self._kd_head_added_to_optim = False
+            teacher=self.teacher,           # Main teacher for knowledge distillation
+            student=self.student,           # Student to be trained
+            middle_teacher=self.middle_teacher,  # Pruning expert for pruning guidance
+            pruning_expert=self.middle_teacher   # Alias for clarity
+        ).to(self.device)  # Move to GPU!
+        
+        # Add KD framework parameters to optimizer if it has trainable parameters
+        kd_params = list(self.kd_framework.parameters())
+        if kd_params:
+            # Create new optimizer with both student and KD framework parameters
+            all_params = list(self.student.parameters()) + kd_params
+            self.optimizer = torch.optim.Adam(
+                all_params, 
+                lr=self.args.lr, 
+                weight_decay=self.args.l2_coef
+            )
         
         # Initialize optimizer
         self.optimizer = torch.optim.Adam(
@@ -158,22 +246,38 @@ class StudentTrainer:
         )
         
         # Print model info
-        middle_params = count_parameters(self.middle_teacher)
+        if self.teacher:
+            teacher_params = count_parameters(self.teacher)
+            print(f"Main teacher model: {teacher_params:,} parameters")
+        else:
+            print("Main teacher: Not loaded")
+            
+        if self.middle_teacher:
+            middle_params = count_parameters(self.middle_teacher)
+            print(f"Pruning expert teacher: {middle_params:,} parameters")
+        else:
+            print("Pruning expert teacher: Not loaded")
+            
         student_params = count_parameters(self.student)
-        print(f"Middle teacher model: {middle_params:,} parameters")
         print(f"Student model: {student_params:,} parameters")
         print(f"Student compression ratio: {self.args.student_compression_ratio:.2f}")
         
-        # Check pruning status
-        print(f"Pruning enabled: {self.student.enable_pruning}")
-        if hasattr(self.student, 'mp_attention_mask'):
-            print(f"Attention masks initialized: MP={self.student.mp_attention_mask.shape}, SC={self.student.sc_attention_mask.shape}")
+        # Print dual-teacher mode info
+        if self.teacher and self.middle_teacher:
+            print("🚀 Dual-Teacher Mode: Main teacher (knowledge) + Pruning expert (efficiency)")
+        elif self.teacher:
+            print("📚 Knowledge Distillation Mode: Main teacher only")
+        elif self.middle_teacher:
+            print("✂️ Pruning Guidance Mode: Pruning expert only")
         else:
-            print("Warning: Attention masks not found!")
+            print("🎯 Self-Training Mode: No teacher guidance")
         
-        # Print initial sparsity stats
-        initial_sparsity = self.get_sparsity_stats()
-        print(f"Initial sparsity stats: {initial_sparsity}")
+        # Check guidance status
+        print(f"Middle teacher guidance enabled: {self.student.use_middle_teacher_guidance}")
+        if self.student.use_middle_teacher_guidance:
+            print("✅ Student will use guidance from middle teacher (pruning expert)")
+        else:
+            print("ℹ️ Student will train without guidance (standard mode)")
         
     def get_contrastive_nodes(self, batch_size=1024):
         """Get random nodes for contrastive learning"""
@@ -184,89 +288,185 @@ class StudentTrainer:
             return torch.randperm(total_nodes, device=self.device)[:batch_size]
     
     def train_epoch(self):
-        """Train for one epoch"""
+        """Train for one epoch using enhanced dual-teacher framework with proper distillation and pruning"""
         self.student.train()
-        self.middle_teacher.eval()  # Set middle teacher to eval mode
+        
+        # Set teachers to eval mode
+        if self.teacher:
+            self.teacher.eval()
+        if self.middle_teacher:
+            self.middle_teacher.eval()
+            
         self.optimizer.zero_grad()
         
-        # Forward pass - student contrastive loss
-        student_loss = self.student(self.feats, self.pos, self.mps, self.nei_index)
+        # Get contrastive nodes for this batch
+        contrastive_nodes = self.get_contrastive_nodes(batch_size=1024)
         
-        # Distillation loss from middle teacher
-        if hasattr(self.args, 'middle_teacher_path') and os.path.exists(self.args.middle_teacher_path):
-            train_nodes = self.get_contrastive_nodes()
-            # Build and pass distillation config using current args
-            distill_config = get_distillation_config(self.args)
-            distill_config['num_classes'] = self.nb_classes
-            total_loss_with_distill, loss_dict = self.kd_framework.calc_distillation_loss(
-                self.feats, self.mps, self.nei_index, self.pos, nodes=train_nodes, distill_config=distill_config
+        # 1. Get pruning guidance from middle teacher (pruning expert)
+        pruning_guidance = None
+        pruning_loss = torch.tensor(0.0, device=self.device)
+        if self.middle_teacher:
+            with torch.no_grad():
+                # Get comprehensive pruning guidance
+                pruning_guidance = self.middle_teacher.get_pruning_guidance(
+                    self.feats, self.mps, self.nei_index
+                )
+            
+            # Calculate expert alignment loss for better pruning
+            if hasattr(self.kd_framework, 'calc_expert_alignment_loss'):
+                pruning_loss = self.kd_framework.calc_expert_alignment_loss(
+                    self.feats, self.mps, self.nei_index, pruning_guidance
+                )
+        
+        # 2. Forward pass - student loss with pruning guidance
+        middle_teacher_guidance = None
+        if self.middle_teacher and self.student.use_middle_teacher_guidance:
+            with torch.no_grad():
+                # Get detailed representations from middle teacher
+                mp_guidance, sc_guidance = self.middle_teacher.get_representations(
+                    self.feats, self.mps, self.nei_index, use_augmentation=True
+                )
+                middle_teacher_guidance = {
+                    'mp_guidance': mp_guidance.detach(),
+                    'sc_guidance': sc_guidance.detach(),
+                    'pruning_guidance': pruning_guidance
+                }
+        
+        student_loss = self.student(self.feats, self.pos, self.mps, self.nei_index, 
+                                   middle_teacher_guidance=middle_teacher_guidance)
+        
+        # 3. Enhanced knowledge distillation from BOTH teachers
+        kd_loss = torch.tensor(0.0, device=self.device)
+        middle_kd_loss = torch.tensor(0.0, device=self.device)
+        
+        # Main teacher knowledge distillation
+        if self.teacher:
+            # Use the built-in knowledge distillation framework
+            if hasattr(self.kd_framework, 'calc_knowledge_distillation_loss'):
+                kd_loss = self.kd_framework.calc_knowledge_distillation_loss(
+                    self.feats, self.mps, self.nei_index, distill_config={
+                        'distill_weight': self.args.stage2_distill_weight,
+                        'temperature': getattr(self.args, 'kd_temperature', 4.0),
+                        'nodes': contrastive_nodes,
+                        'use_kl_div': getattr(self.args, 'use_kl_div', True),
+                        'use_info_nce': getattr(self.args, 'use_info_nce', True)
+                    }
+                )
+            else:
+                # Fallback to basic distillation
+                with torch.no_grad():
+                    teacher_mp, teacher_sc = self.teacher.get_representations(self.feats, self.mps, self.nei_index)
+                
+                student_mp, student_sc = self.student.get_teacher_aligned_representations(
+                    self.feats, self.mps, self.nei_index, middle_teacher_guidance
+                )
+                
+                # Enhanced distillation with InfoNCE and KL divergence
+                from models.kd_heco import infoNCE, KLDiverge
+                
+                # InfoNCE contrastive distillation
+                info_nce_mp = infoNCE(student_mp, teacher_mp.detach(), 
+                                     contrastive_nodes, temperature=4.0)
+                info_nce_sc = infoNCE(student_sc, teacher_sc.detach(), 
+                                     contrastive_nodes, temperature=4.0)
+                
+                # KL divergence for soft target distillation
+                kl_mp = KLDiverge(teacher_mp.detach(), student_mp, temperature=4.0)
+                kl_sc = KLDiverge(teacher_sc.detach(), student_sc, temperature=4.0)
+                
+                kd_loss = (info_nce_mp + info_nce_sc + kl_mp + kl_sc) * 0.25
+        
+        # Middle teacher knowledge distillation (prioritize the better performing teacher!)
+        if self.middle_teacher:
+            with torch.no_grad():
+                middle_teacher_mp, middle_teacher_sc = self.middle_teacher.get_representations(
+                    self.feats, self.mps, self.nei_index, use_augmentation=False
+                )
+            
+            # Get student representations aligned to middle teacher dimensions
+            student_mp, student_sc = self.student.get_teacher_aligned_representations(
+                self.feats, self.mps, self.nei_index, middle_teacher_guidance
             )
-            distill_loss = loss_dict['distill_loss']
-            # Include KD student prediction head params in optimizer once available
-            if (not self._kd_head_added_to_optim and
-                hasattr(self.kd_framework, 'student_prediction_classifier') and
-                isinstance(self.kd_framework.student_prediction_classifier, nn.Module)):
-                self.optimizer.add_param_group({
-                    'params': self.kd_framework.student_prediction_classifier.parameters(),
-                    'lr': self.args.lr,
-                    'weight_decay': self.args.l2_coef
-                })
-                self._kd_head_added_to_optim = True
-            total_loss = student_loss + self.args.stage2_distill_weight * distill_loss
-        else:
-            total_loss = student_loss
-            distill_loss = torch.tensor(0.0)
+            
+            # Enhanced distillation from the BETTER middle teacher
+            from models.kd_heco import infoNCE, KLDiverge
+            
+            # InfoNCE contrastive distillation from middle teacher
+            middle_info_nce_mp = infoNCE(student_mp, middle_teacher_mp.detach(), 
+                                        contrastive_nodes, temperature=3.0)  # Lower temp for better teacher
+            middle_info_nce_sc = infoNCE(student_sc, middle_teacher_sc.detach(), 
+                                        contrastive_nodes, temperature=3.0)
+            
+            # KL divergence from middle teacher
+            middle_kl_mp = KLDiverge(middle_teacher_mp.detach(), student_mp, temperature=3.0)
+            middle_kl_sc = KLDiverge(middle_teacher_sc.detach(), student_sc, temperature=3.0)
+            
+            middle_kd_loss = (middle_info_nce_mp + middle_info_nce_sc + middle_kl_mp + middle_kl_sc) * 0.25
+        
+        # 4. Subspace contrastive loss for better representation learning
+        subspace_loss = torch.tensor(0.0, device=self.device)
+        if self.student.use_middle_teacher_guidance and pruning_guidance:
+            try:
+                from models.kd_heco import subspace_contrastive_loss_hetero
+                
+                # Get student representations
+                student_mp, student_sc = self.student.get_representations(
+                    self.feats, self.mps, self.nei_index, middle_teacher_guidance
+                )
+                
+                # Extract masks from pruning guidance if available
+                mp_masks = pruning_guidance.get('mp_importance', None)
+                sc_masks = pruning_guidance.get('sc_importance', None)
+                
+                if mp_masks is not None and sc_masks is not None:
+                    subspace_loss = subspace_contrastive_loss_hetero(
+                        student_mp, student_sc, mp_masks, sc_masks,
+                        contrastive_nodes, temperature=1.0, weight=0.1
+                    )
+            except Exception as e:
+                # Skip subspace loss if there are issues
+                pass
+        
+        # 5. Enhanced loss weighting - prioritize the BETTER teacher!
+        total_loss = student_loss
+        
+        # Since middle teacher (91.56%) > main teacher (88.59%), prioritize middle teacher
+        if self.teacher and self.middle_teacher:
+            # Adaptive weighting - prioritize the BETTER performing teacher
+            main_kd_weight = self.args.stage2_distill_weight * 0.3  # Reduce main teacher influence
+            middle_kd_weight = 1.0  # Strong weight for better teacher's knowledge distillation
+            middle_pruning_weight = getattr(self.args, 'pruning_weight', 0.5)  # Moderate pruning guidance
+            
+            total_loss += main_kd_weight * kd_loss  # Main teacher KD (weaker)
+            total_loss += middle_kd_weight * middle_kd_loss  # Middle teacher KD (stronger!)
+            total_loss += middle_pruning_weight * pruning_loss  # Pruning guidance
+            
+            if not hasattr(self, '_log_counter'):
+                self._log_counter = 0
+            if self._log_counter % 20 == 0:  # Log every 20 steps
+                print(f"Loss weights - main_kd: {main_kd_weight:.2f}, middle_kd: {middle_kd_weight:.2f}, pruning: {middle_pruning_weight:.2f}")
+            self._log_counter += 1
+            
+        elif self.teacher:
+            # Fallback to main teacher only
+            total_loss += self.args.stage2_distill_weight * kd_loss
+            
+        elif self.middle_teacher:
+            # Use only middle teacher (the better one)
+            middle_weight = getattr(self.args, 'pruning_weight', 1.0)
+            total_loss += middle_weight * pruning_loss
+            
+        if subspace_loss > 0:
+            total_loss += 0.2 * subspace_loss  # Increase subspace learning weight
         
         # Backward pass
         total_loss.backward()
         self.optimizer.step()
         
-        return total_loss.item(), student_loss.item(), distill_loss.item()
+        return (total_loss.item(), student_loss.item(), kd_loss.item(), 
+                middle_kd_loss.item(), pruning_loss.item(), subspace_loss.item())
     
-    def apply_progressive_attention_pruning(self, epoch):
-        """Apply progressive attention pruning with optimal timing"""
-        if not hasattr(self.student, 'apply_progressive_attention_pruning'):
-            return
-            
-        # Phase 1: Warm-up (epochs 0-19) - No pruning, let model stabilize
-        if epoch < 20:
-            return
-            
-        # Phase 2: Early pruning (epochs 20-49) - Gentle pruning start
-        elif epoch < 50:
-            if epoch % 5 == 0:  # Every 5 epochs
-                pruning_ratios = {
-                    'current_epoch': epoch - 20,  # Adjust for pruning start
-                    'max_epochs': 80,  # Total pruning epochs (50-20=30, plus 50 more)
-                    'min_attention_sparsity': 0.1,  # Start very gentle
-                    'max_attention_sparsity': 0.6,  # Target 60% sparsity
-                    'attention_sparsity_weight': 0.001  # Low weight initially
-                }
-                self.student.apply_progressive_attention_pruning(pruning_ratios)
-                
-        # Phase 3: Aggressive pruning (epochs 50-99) - Main pruning phase  
-        elif epoch < 100:
-            if epoch % 3 == 0:  # Every 3 epochs for more frequent updates
-                pruning_ratios = {
-                    'current_epoch': epoch - 20,
-                    'max_epochs': 80,
-                    'min_attention_sparsity': 0.1,
-                    'max_attention_sparsity': 0.7,  # Higher target
-                    'attention_sparsity_weight': 0.005  # Standard weight
-                }
-                self.student.apply_progressive_attention_pruning(pruning_ratios)
-                
-        # Phase 4: Fine-tuning (epochs 100+) - Stabilize pruned model
-        else:
-            if epoch % 10 == 0:  # Less frequent updates
-                pruning_ratios = {
-                    'current_epoch': 80,  # Keep at max pruning
-                    'max_epochs': 80,
-                    'min_attention_sparsity': 0.1,
-                    'max_attention_sparsity': 0.8,  # Final high sparsity
-                    'attention_sparsity_weight': 0.002  # Reduce weight for stability
-                }
-                self.student.apply_progressive_attention_pruning(pruning_ratios)
+
     
     def validate(self):
         """Validate the model"""
@@ -290,11 +490,7 @@ class StudentTrainer:
         
         return accuracy, macro_f1, micro_f1
     
-    def get_sparsity_stats(self):
-        """Get current sparsity statistics"""
-        if hasattr(self.student, 'get_sparsity_stats'):
-            return self.student.get_sparsity_stats()
-        return {}
+
     
     def save_model(self, epoch, is_best=False):
         """Save model checkpoint"""
@@ -305,7 +501,7 @@ class StudentTrainer:
             'loss': self.best_loss,
             'args': self.args,
             'augmentation_config': self.augmentation_config,
-            'sparsity_stats': self.get_sparsity_stats(),
+            'guidance_enabled': self.student.use_middle_teacher_guidance,
             'compression_ratio': self.args.student_compression_ratio
         }
         
@@ -332,34 +528,42 @@ class StudentTrainer:
         for epoch in progress_bar:
             # Epoch-level NumPy seeding for reproducibility of any np-based sampling
             np.random.seed(self.args.seed + epoch)
-            # Training step
-            total_loss, student_loss, distill_loss = self.train_epoch()
+            # Enhanced training step with dual-teacher guidance, distillation, and pruning
+            loss_tuple = self.train_epoch()
             
-            # Apply progressive attention pruning
-            self.apply_progressive_attention_pruning(epoch)
+            # Handle different return formats
+            if len(loss_tuple) == 6:
+                total_loss, student_loss, kd_loss, middle_kd_loss, pruning_loss, subspace_loss = loss_tuple
+            elif len(loss_tuple) == 5:
+                total_loss, student_loss, kd_loss, pruning_loss, subspace_loss = loss_tuple
+                middle_kd_loss = 0.0
+            else:
+                total_loss, student_loss, kd_loss = loss_tuple
+                middle_kd_loss = pruning_loss = subspace_loss = 0.0
             
             # Validation step
             val_loss = self.validate()
 
-            # Update progress bar with current metrics
+            # Update progress bar with enhanced metrics including middle teacher KD
             postfix_dict = {
-                'total_loss': f"{total_loss:.4f}",
-                'student_loss': f"{student_loss:.4f}",
-                'distill_loss': f"{distill_loss:.4f}",
-                'val_loss': f"{val_loss:.4f}",
-                'best_loss': f"{self.best_loss:.4f}",
+                'total': f"{total_loss:.4f}",
+                'student': f"{student_loss:.4f}",
+                'main_kd': f"{kd_loss:.4f}",
+                'mid_kd': f"{middle_kd_loss:.4f}",  # Middle teacher KD (should be higher impact)
+                'prune': f"{pruning_loss:.4f}",
+                'subspace': f"{subspace_loss:.4f}",
+                'val': f"{val_loss:.4f}",
+                'best': f"{self.best_loss:.4f}",
                 'patience': f"{self.patience_counter}/{self.args.patience}"
             }
             
-            # Add sparsity stats periodically
-            if epoch % self.args.log_interval == 0:
-                sparsity_stats = self.get_sparsity_stats()
-                if sparsity_stats:
-                    mp_att_sparsity = sparsity_stats.get('metapath_attention_sparsity', 1.0)
-                    sc_att_sparsity = sparsity_stats.get('schema_attention_sparsity', 1.0)
+            # Add guidance info when available
+            if self.student.use_middle_teacher_guidance:
+                mp_weight, sc_weight = self.student.get_guidance_fusion_weights()
+                if mp_weight is not None:
                     postfix_dict.update({
-                        'mp_att': f"{mp_att_sparsity:.3f}",
-                        'sc_att': f"{sc_att_sparsity:.3f}"
+                        'mp_guide': f"{mp_weight:.3f}",
+                        'sc_guide': f"{sc_weight:.3f}"
                     })
             
             # Add evaluation metrics when available
@@ -411,11 +615,11 @@ class StudentTrainer:
         
         # Model statistics
         student_params = count_parameters(self.student)
-        final_sparsity = self.get_sparsity_stats()
         print(f"Student model parameters: {student_params:,}")
-        print(f"Student compression ratio: {self.args.compression_ratio:.2f}")
+        print(f"Student compression ratio: {self.args.student_compression_ratio:.2f}")
+        print(f"Middle teacher guidance was {'enabled' if self.student.use_middle_teacher_guidance else 'disabled'}")
         
-        if final_sparsity:
+        if False:  # Remove sparsity stats code block
             print(f"Final Sparsity Statistics:")
             for key, value in final_sparsity.items():
                 if isinstance(value, dict):

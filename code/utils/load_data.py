@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import scipy.sparse as sp
 import torch as th
@@ -45,7 +46,10 @@ def sparse_mx_to_torch_sparse_tensor(sparse_mx):
 
 def load_acm(ratio, type_num):
     # The order of node types: 0 p 1 a 2 s
-    path = "../data/acm/"
+    # Get the project root directory (two levels up from utils)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, '..', '..')
+    path = os.path.join(project_root, "data", "acm") + os.sep
     label = np.load(path + "labels.npy").astype('int32')
     label = encode_onehot(label)
     nei_a = np.load(path + "nei_a.npy", allow_pickle=True)
@@ -77,7 +81,9 @@ def load_acm(ratio, type_num):
 
 def load_dblp(ratio, type_num):
     # The order of node types: 0 a 1 p 2 c 3 t
-    path = "../data/dblp/"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, '..', '..')
+    path = os.path.join(project_root, "data", "dblp") + os.sep
     label = np.load(path + "labels.npy").astype('int32')
     label = encode_onehot(label)
     nei_p = np.load(path + "nei_p.npy", allow_pickle=True)
@@ -107,7 +113,9 @@ def load_dblp(ratio, type_num):
 
 def load_aminer(ratio, type_num):
     # The order of node types: 0 p 1 a 2 r
-    path = "../data/aminer/"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, '..', '..')
+    path = os.path.join(project_root, "data", "aminer") + os.sep
     label = np.load(path + "labels.npy").astype('int32')
     label = encode_onehot(label)
     nei_a = np.load(path + "nei_a.npy", allow_pickle=True)
@@ -140,7 +148,9 @@ def load_aminer(ratio, type_num):
 
 def load_freebase(ratio, type_num):
     # The order of node types: 0 m 1 d 2 a 3 w
-    path = "../data/freebase/"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, '..', '..')
+    path = os.path.join(project_root, "data", "freebase") + os.sep
     label = np.load(path + "labels.npy").astype('int32')
     label = encode_onehot(label)
     nei_d = np.load(path + "nei_d.npy", allow_pickle=True)

@@ -91,6 +91,9 @@ class ModelEvaluator:
         checkpoint = torch.load(model_path, map_location=self.device)
         compression_ratio = checkpoint.get('compression_ratio', 0.5)
         
+        # Check if this is an enhanced student model with guidance parameters
+        has_guidance = any('guidance' in key or 'fusion' in key for key in checkpoint['model_state_dict'].keys())
+        
         model = StudentMyHeCo(
             hidden_dim=self.args.hidden_dim,
             feats_dim_list=self.feats_dim_list,
@@ -101,7 +104,8 @@ class ModelEvaluator:
             nei_num=self.args.nei_num,
             tau=self.args.tau,
             lam=self.args.lam,
-            compression_ratio=compression_ratio
+            compression_ratio=compression_ratio,
+            use_middle_teacher_guidance=has_guidance  # Enable guidance if model has guidance parameters
         ).to(self.device)
         
         model.load_state_dict(checkpoint['model_state_dict'])

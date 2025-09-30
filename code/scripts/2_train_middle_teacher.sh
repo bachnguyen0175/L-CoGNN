@@ -6,11 +6,9 @@ echo "==============================================="
 
 DATASET="acm"
 # Paths for checking (from scripts directory)
-TEACHER_MODEL_CHECK="../../results/teacher_heco_${DATASET}.pkl"
 MIDDLE_TEACHER_MODEL_CHECK="../../results/middle_teacher_heco_${DATASET}.pkl"
 
 # Paths for Python script (from code directory after cd ..)  
-TEACHER_MODEL="../results/teacher_heco_${DATASET}.pkl"
 MIDDLE_TEACHER_MODEL="../results/middle_teacher_heco_${DATASET}.pkl"
 
 # Check if middle teacher already exists
@@ -18,13 +16,6 @@ if [ -f "$MIDDLE_TEACHER_MODEL_CHECK" ]; then
     echo "✅ Middle teacher model already exists: $MIDDLE_TEACHER_MODEL_CHECK"
     echo "Delete the file if you want to retrain."
     exit 0
-fi
-
-# Check if teacher exists
-if [ ! -f "$TEACHER_MODEL_CHECK" ]; then
-    echo "❌ Teacher model not found: $TEACHER_MODEL_CHECK"
-    echo "Please run 1_train_teacher.sh first"
-    exit 1
 fi
 
 echo "Training middle teacher from teacher on GPU..."
@@ -40,18 +31,7 @@ cd .. && PYTHONPATH=. ../.venv/bin/python training/train_middle_teacher.py \
     --attn_drop=0.5 \
     --sample_rate 7 1 \
     --lam=0.5 \
-    --teacher_model_path="$TEACHER_MODEL" \
     --middle_teacher_save_path="$MIDDLE_TEACHER_MODEL" \
-    --middle_compression_ratio=0.7 \
-    --stage1_distill_weight=0.7 \
-    --use_node_masking \
-    --use_edge_augmentation \
-    --use_autoencoder \
-    --mask_rate=0.1 \
-    --remask_rate=0.3 \
-    --edge_drop_rate=0.1 \
-    --num_remasking=2 \
-    --reconstruction_weight=0.1 \
     --cuda \
     --seed=42
 

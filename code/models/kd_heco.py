@@ -213,14 +213,15 @@ class MyHeCo(nn.Module):
         return representations
 
 
-class MiddleMyHeCo(nn.Module):
-    """Middle teacher with compressed architecture and augmentation for hierarchical distillation"""
+class PruningExpertTeacher(nn.Module):
+    """
+    Specialized middle teacher that acts as a pruning expert.
+    Learns on augmented heterogeneous graphs and provides pruning guidance to student.
+    """
     def __init__(self, feats_dim_list, hidden_dim, attn_drop, feat_drop, P, sample_rate, nei_num, tau, lam, 
-                 compression_ratio=0.7, augmentation_config=None):
-        super(MiddleMyHeCo, self).__init__()
-        # Compress hidden dimension for middle teacher
-        self.compressed_dim = int(hidden_dim * compression_ratio)
-        self.original_hidden_dim = hidden_dim
+                 augmentation_config=None):
+        super(PruningExpertTeacher, self).__init__()
+        self.expert_dim = hidden_dim
         self.P = P
         self.sample_rate = sample_rate
         self.nei_num = nei_num
@@ -228,8 +229,8 @@ class MiddleMyHeCo(nn.Module):
         self.lam = lam
         self.feats_dim_list = feats_dim_list
         
-        # Compressed feature projection layers
-        self.fc_list = nn.ModuleList([nn.Linear(feats_dim, self.compressed_dim, bias=True)
+        # Feature projection layers optimized for augmented data
+        self.fc_list = nn.ModuleList([nn.Linear(feats_dim, self.expert_dim, bias=True)
                                       for feats_dim in feats_dim_list])
         for fc in self.fc_list:
             nn.init.xavier_normal_(fc.weight, gain=1.414)
@@ -239,101 +240,232 @@ class MiddleMyHeCo(nn.Module):
         else:
             self.feat_drop = lambda x: x
         
-        # Compressed encoders
-        self.mp = myMp_encoder(P, self.compressed_dim, attn_drop)
-        self.sc = mySc_encoder(self.compressed_dim, sample_rate, nei_num, attn_drop)
+        # Specialized encoders for augmented graph understanding
+        self.mp = myMp_encoder(P, self.expert_dim, attn_drop)
+        self.sc = mySc_encoder(self.expert_dim, sample_rate, nei_num, attn_drop)
         
-        # Standard contrast module
-        self.contrast = Contrast(self.compressed_dim, tau, lam)
+        # Augmentation-aware contrast module
+        self.contrast = Contrast(self.expert_dim, tau, lam)
         
-        # Augmentation pipeline
+        # Augmentation pipeline - this is the core expertise
         if augmentation_config is None:
             augmentation_config = {
                 'use_node_masking': True,
+                'use_meta_path_connections': True,
                 'use_autoencoder': True,
-                'mask_rate': 0.1,
-                'remask_rate': 0.2,
-                'edge_drop_rate': 0.05,
-                'num_remasking': 2,
-                'autoencoder_hidden_dim': self.original_hidden_dim // 2,  # Half of main hidden dim
-                'autoencoder_layers': 2,
-                'reconstruction_weight': 0.1
+                'mask_rate': 0.15,  # Higher masking for better robustness
+                'remask_rate': 0.25,
+                'connection_strength': 0.2,
+                'num_remasking': 3,
+                'autoencoder_hidden_dim': self.expert_dim,
+                'autoencoder_layers': 3,
+                'reconstruction_weight': 0.2
             }
+        self.augmentation_config = augmentation_config
+
+        from training.hetero_augmentations import HeteroAugmentationPipeline
         self.augmentation_pipeline = HeteroAugmentationPipeline(feats_dim_list, augmentation_config)
         
-        # Alignment layers for distillation
-        self.teacher_align = nn.Linear(self.compressed_dim, hidden_dim)  # Align with teacher
-        self.student_align = nn.Linear(self.compressed_dim, hidden_dim // 2)  # Align with student
+        # Pruning guidance networks
+        self.mp_pruning_guide = nn.Sequential(
+            nn.Linear(self.expert_dim, self.expert_dim // 2),
+            nn.ReLU(),
+            nn.Linear(self.expert_dim // 2, P),  # Guidance for each meta-path
+            nn.Sigmoid()
+        )
+        
+        self.sc_pruning_guide = nn.Sequential(
+            nn.Linear(self.expert_dim, self.expert_dim // 2),
+            nn.ReLU(),
+            nn.Linear(self.expert_dim // 2, nei_num),  # Guidance for each schema connection
+            nn.Sigmoid()
+        )
+        
+        # Attention importance predictor
+        self.attention_importance = nn.Sequential(
+            nn.Linear(self.expert_dim * 2, self.expert_dim),  # Combined mp+sc
+            nn.ReLU(),
+            nn.Linear(self.expert_dim, self.expert_dim // 4),
+            nn.ReLU(),
+            nn.Linear(self.expert_dim // 4, 1),
+            nn.Sigmoid()
+        )
+        
+        # Cross-augmentation learning module
+        num_heads = max(1, self.expert_dim // 16)  # Ensure divisible by num_heads
+        num_heads = min(num_heads, 8)  # Cap at 8 heads
+        if self.expert_dim % num_heads != 0:
+            num_heads = 1  # Fall back to single head if not divisible
+            
+        self.cross_aug_learning = nn.ModuleDict({
+            'mask_predictor': nn.Linear(self.expert_dim, feats_dim_list[0]),  # Predict which nodes should be masked
+            'structure_predictor': nn.Linear(self.expert_dim, self.expert_dim),  # Predict structural importance
+            'combined_projector': nn.Linear(self.expert_dim * 2, self.expert_dim),  # Project combined to expert_dim
+            'attention_allocator': nn.MultiheadAttention(self.expert_dim, num_heads, dropout=attn_drop, batch_first=True)
+        })
 
-    def forward(self, feats, pos, mps, nei_index, use_augmentation=True):
-        # Apply augmentation during training
-        total_reconstruction_loss = torch.tensor(0.0, device=feats[0].device)
+    def forward(self, feats, pos, mps, nei_index, return_pruning_guidance=False):
+        """
+        Forward pass with augmentation-aware learning and pruning guidance generation
+        """
+        # Always apply augmentation for this expert - it's trained on augmented data
+        aug_feats, aug_info = self.augmentation_pipeline(feats, gs=None, mps=mps)
         
-        if self.training and use_augmentation:
-            # Augmentation pipeline only works on features now (no edge dropping)
-            aug_feats, aug_info = self.augmentation_pipeline(feats)
-            aug_mps = mps  # Use original meta-paths since no edge augmentation
-            # Add reconstruction loss if available
-            if 'total_reconstruction_loss' in aug_info:
-                total_reconstruction_loss = aug_info['total_reconstruction_loss'] * 0.1  # weight
-        else:
-            aug_feats, aug_mps = feats, mps
+        # Process original and augmented features
+        h_all_orig = []
+        h_all_aug = []
+        for i in range(len(feats)):
+            h_all_orig.append(F.elu(self.feat_drop(self.fc_list[i](feats[i]))))
+            h_all_aug.append(F.elu(self.feat_drop(self.fc_list[i](aug_feats[i]))))
         
-        # Process features
-        h_all = []
-        for i in range(len(aug_feats)):
-            h_all.append(F.elu(self.feat_drop(self.fc_list[i](aug_feats[i]))))
+        # Get embeddings from both original and augmented data
+        z_mp_orig = self.mp(h_all_orig[0], mps)
+        z_sc_orig = self.sc(h_all_orig, nei_index)
         
-        # Get meta-path and schema-level embeddings
-        z_mp = self.mp(h_all[0], aug_mps)
-        z_sc = self.sc(h_all, nei_index)
+        z_mp_aug = self.mp(h_all_aug[0], mps)
+        z_sc_aug = self.sc(h_all_aug, nei_index)
         
-        # Standard contrast loss
-        contrast_loss = self.contrast(z_mp, z_sc, pos)
+        # Cross-augmentation consistency learning
+        mp_consistency_loss = F.mse_loss(z_mp_orig, z_mp_aug.detach()) * 0.1
+        sc_consistency_loss = F.mse_loss(z_sc_orig, z_sc_aug.detach()) * 0.1
         
-        # Total loss includes reconstruction loss
-        total_loss = contrast_loss + total_reconstruction_loss
+        # Standard contrastive losses for both
+        contrast_loss_orig = self.contrast(z_mp_orig, z_sc_orig, pos)
+        contrast_loss_aug = self.contrast(z_mp_aug, z_sc_aug, pos)
+        
+        # Reconstruction loss from augmentation
+        reconstruction_loss = torch.tensor(0.0, device=feats[0].device)
+        if 'total_reconstruction_loss' in aug_info:
+            reconstruction_loss = aug_info['total_reconstruction_loss'] * self.augmentation_config.get('reconstruction_weight', 0.2)
+        
+        # Generate pruning guidance based on augmentation patterns
+        pruning_guidance = None
+        if return_pruning_guidance or not self.training:
+            pruning_guidance = self._generate_pruning_guidance(z_mp_aug, z_sc_aug, aug_info)
+        
+        # Total expert loss: learn from both original and augmented, with consistency
+        total_loss = (contrast_loss_orig + contrast_loss_aug) * 0.5 + \
+                    mp_consistency_loss + sc_consistency_loss + reconstruction_loss
+        
+        if return_pruning_guidance:
+            return total_loss, pruning_guidance
         return total_loss
 
-    def get_embeds(self, feats, mps, detach: bool = True):
-        z_mp = F.elu(self.fc_list[0](feats[0]))
+    def _generate_pruning_guidance(self, z_mp, z_sc, aug_info):
+        """Generate pruning guidance based on augmentation patterns and learned representations"""
+        batch_size = z_mp.size(0)
+        
+        # Meta-path importance guidance
+        mp_guidance = self.mp_pruning_guide(z_mp.mean(0, keepdim=True))  # [1, P]
+        
+        # Schema-level importance guidance  
+        sc_guidance = self.sc_pruning_guide(z_sc.mean(0, keepdim=True))  # [1, nei_num]
+        
+        # Combined representation for attention importance
+        combined_repr = torch.cat([z_mp, z_sc], dim=1)  # [batch, 2*expert_dim]
+        attention_importance = self.attention_importance(combined_repr)  # [batch, 1]
+        
+        # Cross-augmentation learning predictions
+        mask_prediction = None
+        structure_importance = None
+        
+        if 'masked_nodes' in aug_info and len(aug_info['masked_nodes']) > 0:
+            # Predict which nodes should be masked based on learned patterns
+            mask_logits = self.cross_aug_learning['mask_predictor'](z_mp)
+            mask_prediction = torch.sigmoid(mask_logits)
+            
+        # Predict structural importance based on augmentation effects
+        structure_importance = self.cross_aug_learning['structure_predictor'](z_mp)
+        structure_importance = F.normalize(structure_importance, p=2, dim=1)
+        
+        # Attention allocation guidance using multi-head attention
+        # Project combined representation to match expert_dim
+        combined_projected = self.cross_aug_learning['combined_projector'](combined_repr)
+        z_combined_proj = combined_projected.unsqueeze(1)  # [batch, 1, expert_dim]
+        
+        attn_output, attn_weights = self.cross_aug_learning['attention_allocator'](
+            z_combined_proj, z_combined_proj, z_combined_proj
+        )
+        
+        pruning_guidance = {
+            'mp_importance': mp_guidance.squeeze(0),  # [P]
+            'sc_importance': sc_guidance.squeeze(0),  # [nei_num]  
+            'attention_importance': attention_importance,  # [batch, 1]
+            'mask_prediction': mask_prediction,  # [batch, feat_dim] or None
+            'structure_importance': structure_importance,  # [batch, expert_dim]
+            'attention_weights': attn_weights,  # [batch, 1, 1]
+            'augmentation_info': aug_info  # Original augmentation metadata
+        }
+        
+        return pruning_guidance
+    
+    def get_embeds(self, feats, mps, detach: bool = True, use_augmentation: bool = True):
+        """Get embeddings with optional augmentation"""
+        if use_augmentation and self.training:
+            aug_feats, _ = self.augmentation_pipeline(feats, gs=None, mps=mps)
+            z_mp = F.elu(self.fc_list[0](aug_feats[0]))
+        else:
+            z_mp = F.elu(self.fc_list[0](feats[0]))
         z_mp = self.mp(z_mp, mps)
         return z_mp.detach() if detach else z_mp
     
-    def get_representations(self, feats, mps, nei_index):
-        """Get both meta-path and schema-level representations"""
+    def get_representations(self, feats, mps, nei_index, use_augmentation: bool = True):
+        """Get both meta-path and schema-level representations with optional augmentation"""
+        if use_augmentation and self.training:
+            aug_feats, _ = self.augmentation_pipeline(feats, gs=None, mps=mps)
+            processed_feats = aug_feats
+        else:
+            processed_feats = feats
+            
         h_all = []
-        for i in range(len(feats)):
-            h_all.append(F.elu(self.feat_drop(self.fc_list[i](feats[i]))))
+        for i in range(len(processed_feats)):
+            h_all.append(F.elu(self.feat_drop(self.fc_list[i](processed_feats[i]))))
         z_mp = self.mp(h_all[0], mps)
         z_sc = self.sc(h_all, nei_index)
         return z_mp, z_sc
     
-    def get_teacher_aligned_representations(self, feats, mps, nei_index):
-        """Get representations aligned with teacher dimension for stage 1 distillation"""
-        z_mp, z_sc = self.get_representations(feats, mps, nei_index)
-        z_mp_aligned = self.teacher_align(z_mp)
-        z_sc_aligned = self.teacher_align(z_sc)
-        return z_mp_aligned, z_sc_aligned
+    def get_pruning_guidance(self, feats, mps, nei_index):
+        """Get pruning guidance for student model"""
+        self.eval()  # Set to eval mode for stable guidance
+        with torch.no_grad():
+            # Create dummy pos tensor on the same device as features
+            dummy_pos = torch.zeros(1, device=feats[0].device)
+            _, pruning_guidance = self.forward(feats, dummy_pos, mps, nei_index, return_pruning_guidance=True)
+        return pruning_guidance
     
-    def get_student_aligned_representations(self, feats, mps, nei_index):
-        """Get representations aligned with student dimension for stage 2 distillation"""
-        z_mp, z_sc = self.get_representations(feats, mps, nei_index)
-        z_mp_aligned = self.student_align(z_mp)
-        z_sc_aligned = self.student_align(z_sc)
-        return z_mp_aligned, z_sc_aligned
+    def update_augmentation_strength(self, epoch, max_epochs):
+        """Dynamically update augmentation strength during training"""
+        # Increase augmentation strength over time for better robustness
+        progress = epoch / max_epochs
+        
+        # Update mask rate
+        base_mask_rate = 0.15
+        max_mask_rate = 0.3
+        new_mask_rate = base_mask_rate + (max_mask_rate - base_mask_rate) * progress
+        
+        # Update connection strength for meta-path connections
+        base_connection = 0.2
+        max_connection = 0.4
+        new_connection = base_connection + (max_connection - base_connection) * progress
+        
+        # Apply updates to augmentation pipeline
+        if hasattr(self.augmentation_pipeline, 'node_masker'):
+            self.augmentation_pipeline.node_masker.mask_rate = new_mask_rate
+            
+        if hasattr(self.augmentation_pipeline, 'meta_path_connector'):
+            self.augmentation_pipeline.meta_path_connector.set_connection_strength(new_connection)
 
 
 class StudentMyHeCo(nn.Module):
-    """Compressed student version of MyHeCo with progressive pruning capabilities"""
+    """Compressed student version of MyHeCo with optional middle teacher guidance"""
     def __init__(self, hidden_dim, feats_dim_list, feat_drop, attn_drop, P, sample_rate,
-                 nei_num, tau, lam, compression_ratio=0.5, enable_pruning=True):
+                 nei_num, tau, lam, compression_ratio=0.5, use_middle_teacher_guidance=False):
         super(StudentMyHeCo, self).__init__()
         self.hidden_dim = hidden_dim
         self.student_dim = int(hidden_dim * compression_ratio)
         self.P = P  # Number of meta-paths
         self.nei_num = nei_num  # Number of neighbor types for schema-level encoder
-        self.enable_pruning = enable_pruning
+        self.use_middle_teacher_guidance = use_middle_teacher_guidance
 
         # Compressed feature projection layers
         self.fc_list = nn.ModuleList([nn.Linear(feats_dim, self.student_dim, bias=True)
@@ -354,461 +486,183 @@ class StudentMyHeCo(nn.Module):
         # Projection layer to match teacher dimension for distillation
         self.teacher_projection = nn.Linear(self.student_dim, hidden_dim)
 
-        # Initialize attention pruning masks
-        if self.enable_pruning:
-            self._init_attention_pruning()
+        # If using middle teacher guidance, initialize guidance integration layers
+        if self.use_middle_teacher_guidance:
+            self._init_guidance_integration()
 
-    def _init_attention_pruning(self):
-        """Initialize attention-focused pruning parameters"""
-        # Meta-path attention pruning parameters
-        self.mp_attention_mask = nn.Parameter(torch.ones(1, self.student_dim), requires_grad=True)
-        self.mp_path_weights = nn.ParameterList([
-            nn.Parameter(torch.ones(1), requires_grad=True) for _ in range(self.P)
-        ])
+    def _init_guidance_integration(self):
+        """Initialize middle teacher guidance integration layers"""
+        # Meta-path guidance integration
+        self.mp_guidance_gate = nn.Sequential(
+            nn.Linear(self.student_dim * 2, self.student_dim),
+            nn.Sigmoid()
+        )
         
-        # Schema attention pruning parameters  
-        self.sc_attention_mask = nn.Parameter(torch.ones(1, self.student_dim), requires_grad=True)
-        self.sc_type_weights = nn.Parameter(torch.ones(self.nei_num), requires_grad=True)
+        # Schema guidance integration
+        self.sc_guidance_gate = nn.Sequential(
+            nn.Linear(self.student_dim * 2, self.student_dim),
+            nn.Sigmoid()
+        )
         
-        # Attention pruning thresholds
-        self.mp_attention_threshold = nn.Parameter(torch.tensor(0.3), requires_grad=True)
-        self.sc_attention_threshold = nn.Parameter(torch.tensor(0.3), requires_grad=True)
-        
-        # Temperature for soft attention pruning
-        self.attention_temperature = nn.Parameter(torch.tensor(2.0), requires_grad=True)
-        
-        # Sparsity control with structure preservation
-        self.register_buffer('attention_sparsity_weight', torch.tensor(0.005))
-        self.register_buffer('target_attention_sparsity', torch.tensor(0.6))  # Target 60% attention sparsity
-        self.register_buffer('structure_preservation_weight', torch.tensor(0.1))  # Preserve important structure
+        # Guidance fusion weights (learnable balance between student and middle teacher)
+        self.mp_fusion_weight = nn.Parameter(torch.tensor(0.3))  # Start with 30% middle teacher influence
+        self.sc_fusion_weight = nn.Parameter(torch.tensor(0.3))  # Start with 30% middle teacher influence
 
-    def forward(self, feats, pos, mps, nei_index):
+    def forward(self, feats, pos, mps, nei_index, middle_teacher_guidance=None):
+        """
+        Forward pass with optional middle teacher guidance
+        
+        Two modes:
+        1. No guidance: Standard student forward pass
+        2. Middle teacher guidance: Use middle teacher's guidance for better learning
+        """
         h_all = []
         for i in range(len(feats)):
             h_all.append(F.elu(self.feat_drop(self.fc_list[i](feats[i]))))
         
-        # Apply attention pruning during forward pass
-        if self.enable_pruning:
-            z_mp = self._forward_with_metapath_attention_pruning(h_all[0], mps)
-            z_sc = self._forward_with_schema_attention_pruning(h_all, nei_index)
+        # Mode 1: Use middle teacher guidance if available and enabled
+        if self.use_middle_teacher_guidance and middle_teacher_guidance is not None:
+            z_mp = self._forward_with_guidance(h_all[0], mps, middle_teacher_guidance, 'mp')
+            z_sc = self._forward_with_guidance(h_all, nei_index, middle_teacher_guidance, 'sc')
         else:
+            # Mode 2: Standard student forward pass (no pruning)
             z_mp = self.mp(h_all[0], mps)
             z_sc = self.sc(h_all, nei_index)
             
         # Base contrastive loss
         contrast_loss = self.contrast(z_mp, z_sc, pos)
         
-        # Add attention pruning loss
-        if self.enable_pruning and self.training:
-            attention_loss = self.get_attention_pruning_loss()
-            total_loss = contrast_loss + attention_loss
-        else:
-            total_loss = contrast_loss
+        # Add guidance alignment loss if middle teacher guidance is used
+        total_loss = contrast_loss
+        if self.use_middle_teacher_guidance and middle_teacher_guidance is not None and self.training:
+            guidance_loss = self._compute_guidance_alignment_loss(z_mp, z_sc, middle_teacher_guidance)
+            total_loss += guidance_loss * 0.2  # Weight the guidance loss
             
         return total_loss
 
-    def _forward_with_metapath_attention_pruning(self, h, mps):
-        """Forward pass with meta-path attention pruning"""
-        if not self.enable_pruning:
-            return self.mp(h, mps)
+    def _forward_with_guidance(self, h_input, adj_input, middle_teacher_guidance, module_type):
+        """
+        Forward pass with middle teacher guidance integration
         
-        # Get meta-path attention masks
-        mp_att_mask, mp_path_masks = self.get_metapath_attention_masks()
-        
-        # Apply path-level pruning - weight each meta-path
-        pruned_embeds = []
-        for i in range(self.P):
-            if i < len(mp_path_masks):
-                # Apply path weight to the meta-path
-                path_weight = mp_path_masks[i]
-                embed = self.mp.node_level[i](h, mps[i])
-                pruned_embeds.append(embed * path_weight)
-            else:
-                pruned_embeds.append(self.mp.node_level[i](h, mps[i]))
-        
-        # Apply attention-level pruning to the attention mechanism
-        z_mp = self._pruned_metapath_attention(pruned_embeds, mp_att_mask)
-        return z_mp
-
-    def _forward_with_schema_attention_pruning(self, h_all, nei_index):
-        """Forward pass with schema attention pruning"""
-        if not self.enable_pruning:
-            return self.sc(h_all, nei_index)
-        
-        # Get schema attention masks
-        sc_att_mask, sc_type_masks = self.get_schema_attention_masks()
-        
-        # Apply intra-attention (within each node type) with pruning
-        pruned_embeds = []
-        for i in range(self.sc.nei_num):
-            # Sample neighbors as usual
-            sele_nei = []
-            sample_num = self.sc.sample_rate[i]
-            for per_node_nei in nei_index[i]:
-                if len(per_node_nei) >= sample_num:
-                    select_one = torch.tensor(np.random.choice(per_node_nei, sample_num,
-                                                               replace=False))[np.newaxis]
-                else:
-                    select_one = torch.tensor(np.random.choice(per_node_nei, sample_num,
-                                                               replace=True))[np.newaxis]
-                sele_nei.append(select_one)
-            sele_nei = torch.cat(sele_nei, dim=0).to(h_all[0].device)
+        Args:
+            h_input: Input features (h for mp, h_all for sc)  
+            adj_input: Adjacency input (mps for mp, nei_index for sc)
+            middle_teacher_guidance: Guidance from middle teacher
+            module_type: 'mp' for meta-path, 'sc' for schema
+        """
+        if module_type == 'mp':
+            # Standard student forward pass
+            student_output = self.mp(h_input, adj_input)
             
-            # Apply type-level pruning weight
-            type_weight = sc_type_masks[i] if i < len(sc_type_masks) else 1.0
-            one_type_emb = F.elu(self.sc.intra[i](sele_nei, h_all[i + 1], h_all[0]))
-            pruned_embeds.append(one_type_emb * type_weight)
+            # Get middle teacher guidance for meta-path
+            if 'mp_guidance' in middle_teacher_guidance:
+                teacher_guidance = middle_teacher_guidance['mp_guidance']
+                
+                # Ensure dimensions match
+                if teacher_guidance.size(-1) != self.student_dim:
+                    # Project teacher guidance to student dimension
+                    guidance_proj = nn.Linear(teacher_guidance.size(-1), self.student_dim, device=teacher_guidance.device)
+                    teacher_guidance = guidance_proj(teacher_guidance)
+                
+                # Fuse student output with teacher guidance
+                fused_features = torch.cat([student_output, teacher_guidance], dim=-1)
+                guidance_gate = self.mp_guidance_gate(fused_features)
+                
+                # Weighted fusion
+                fusion_weight = torch.sigmoid(self.mp_fusion_weight)
+                result = (1 - fusion_weight) * student_output + fusion_weight * teacher_guidance * guidance_gate
+            else:
+                result = student_output
+                
+        elif module_type == 'sc':
+            # Standard student forward pass
+            student_output = self.sc(h_input, adj_input)
+            
+            # Get middle teacher guidance for schema
+            if 'sc_guidance' in middle_teacher_guidance:
+                teacher_guidance = middle_teacher_guidance['sc_guidance']
+                
+                # Ensure dimensions match
+                if teacher_guidance.size(-1) != self.student_dim:
+                    # Project teacher guidance to student dimension
+                    guidance_proj = nn.Linear(teacher_guidance.size(-1), self.student_dim, device=teacher_guidance.device)
+                    teacher_guidance = guidance_proj(teacher_guidance)
+                
+                # Fuse student output with teacher guidance
+                fused_features = torch.cat([student_output, teacher_guidance], dim=-1)
+                guidance_gate = self.sc_guidance_gate(fused_features)
+                
+                # Weighted fusion
+                fusion_weight = torch.sigmoid(self.sc_fusion_weight)
+                result = (1 - fusion_weight) * student_output + fusion_weight * teacher_guidance * guidance_gate
+            else:
+                result = student_output
+        else:
+            raise ValueError(f"Unknown module_type: {module_type}")
+            
+        return result
+    
+    def _compute_guidance_alignment_loss(self, z_mp, z_sc, middle_teacher_guidance):
+        """
+        Simple alignment loss to learn from middle teacher guidance
+        """
+        total_loss = torch.tensor(0.0, device=z_mp.device)
         
-        # Apply inter-attention (between node types) with attention pruning
-        z_sc = self._pruned_schema_attention(pruned_embeds, sc_att_mask)
-        return z_sc
+        # Align meta-path representations
+        if 'mp_guidance' in middle_teacher_guidance:
+            mp_target = middle_teacher_guidance['mp_guidance']
+            if mp_target.size(-1) == z_mp.size(-1) and mp_target.size(0) == z_mp.size(0):
+                mp_loss = F.mse_loss(z_mp, mp_target.detach())
+                total_loss += mp_loss * 0.5
+        
+        # Align schema representations
+        if 'sc_guidance' in middle_teacher_guidance:
+            sc_target = middle_teacher_guidance['sc_guidance']
+            if sc_target.size(-1) == z_sc.size(-1) and sc_target.size(0) == z_sc.size(0):
+                sc_loss = F.mse_loss(z_sc, sc_target.detach())
+                total_loss += sc_loss * 0.5
+        
+        return total_loss
 
-    def _pruned_metapath_attention(self, embeds, att_mask):
-        """Meta-path attention mechanism with attention pruning"""
-        beta = []
-        
-        # Apply attention mask to the attention parameter
-        masked_att = self.mp.att.att * att_mask
-        attn_curr = self.mp.att.attn_drop(masked_att)
-        
-        # Compute attention weights for each meta-path embedding
-        for embed in embeds:
-            sp = self.mp.att.tanh(self.mp.att.fc(embed)).mean(dim=0)
-            beta.append(attn_curr.matmul(sp.t()))
-        
-        beta = torch.cat(beta, dim=-1).view(-1)
-        beta = self.mp.att.softmax(beta)
-        
-        # Weighted combination of embeddings
-        z_mp = 0
-        for i in range(len(embeds)):
-            z_mp += embeds[i] * beta[i]
-        
-        return z_mp
-
-    def _pruned_schema_attention(self, embeds, att_mask):
-        """Schema-level attention mechanism with attention pruning"""
-        beta = []
-        
-        # Apply attention mask to the inter-attention parameter
-        masked_att = self.sc.inter.att * att_mask
-        attn_curr = self.sc.inter.attn_drop(masked_att)
-        
-        # Compute attention weights for each node type embedding
-        for embed in embeds:
-            sp = self.sc.inter.tanh(self.sc.inter.fc(embed)).mean(dim=0)
-            beta.append(attn_curr.matmul(sp.t()))
-        
-        beta = torch.cat(beta, dim=-1).view(-1)
-        beta = self.sc.inter.softmax(beta)
-        
-        # Weighted combination of embeddings
-        z_sc = 0
-        for i in range(len(embeds)):
-            z_sc += embeds[i] * beta[i]
-        
-        return z_sc
-
-    def get_embeds(self, feats, mps, detach: bool = True):
+    def get_embeds(self, feats, mps, detach: bool = True, middle_teacher_guidance=None):
+        """Get embeddings with optional middle teacher guidance"""
         z_mp = F.elu(self.fc_list[0](feats[0]))
-        if self.enable_pruning:
-            z_mp = self._forward_with_metapath_attention_pruning(z_mp, mps)
+        
+        if self.use_middle_teacher_guidance and middle_teacher_guidance is not None:
+            z_mp = self._forward_with_guidance(z_mp, mps, middle_teacher_guidance, 'mp')
         else:
             z_mp = self.mp(z_mp, mps)
+        
         return z_mp.detach() if detach else z_mp
     
-    def get_representations(self, feats, mps, nei_index):
+    def get_representations(self, feats, mps, nei_index, middle_teacher_guidance=None):
         """Get both meta-path and schema-level representations"""
         h_all = []
         for i in range(len(feats)):
             h_all.append(F.elu(self.feat_drop(self.fc_list[i](feats[i]))))
         
-        if self.enable_pruning:
-            z_mp = self._forward_with_metapath_attention_pruning(h_all[0], mps)
-            z_sc = self._forward_with_schema_attention_pruning(h_all, nei_index)
+        if self.use_middle_teacher_guidance and middle_teacher_guidance is not None:
+            z_mp = self._forward_with_guidance(h_all[0], mps, middle_teacher_guidance, 'mp')
+            z_sc = self._forward_with_guidance(h_all, nei_index, middle_teacher_guidance, 'sc')
         else:
             z_mp = self.mp(h_all[0], mps)
             z_sc = self.sc(h_all, nei_index)
             
         return z_mp, z_sc
     
-    def get_teacher_aligned_representations(self, feats, mps, nei_index):
-        """Get representations projected to teacher dimension"""
-        z_mp, z_sc = self.get_representations(feats, mps, nei_index)
+    def get_teacher_aligned_representations(self, feats, mps, nei_index, middle_teacher_guidance=None):
+        """Get representations projected to teacher dimension for knowledge distillation"""
+        z_mp, z_sc = self.get_representations(feats, mps, nei_index, middle_teacher_guidance)
         z_mp_aligned = self.teacher_projection(z_mp)
         z_sc_aligned = self.teacher_projection(z_sc)
         return z_mp_aligned, z_sc_aligned
 
-    def get_masks(self):
-        """Get current attention masks for subspace contrastive learning"""
-        if not self.enable_pruning:
-            dummy_mask = torch.ones(self.student_dim, device=next(self.parameters()).device)
-            return dummy_mask, dummy_mask
+    def get_guidance_fusion_weights(self):
+        """Get current fusion weights for analysis"""
+        if not self.use_middle_teacher_guidance:
+            return None, None
         
-        # Get attention masks - use flattened attention masks as embedding masks
-        mp_att_mask, _ = self.get_metapath_attention_masks()
-        sc_att_mask, _ = self.get_schema_attention_masks()
-        
-        # Expand to match embedding dimension if needed
-        if mp_att_mask.size(-1) != self.student_dim:
-            mp_att_mask = mp_att_mask.expand(-1, self.student_dim)
-        if sc_att_mask.size(-1) != self.student_dim:
-            sc_att_mask = sc_att_mask.expand(-1, self.student_dim)
-            
-        return mp_att_mask.squeeze(0), sc_att_mask.squeeze(0)
-
-    def get_metapath_attention_masks(self):
-        """Generate meta-path attention pruning masks"""
-        temp = torch.clamp(self.attention_temperature, min=0.5, max=10.0)
-        
-        # Meta-path attention mask (for attention mechanism itself)
-        mp_att_mask = torch.sigmoid((self.mp_attention_mask - self.mp_attention_threshold) / temp)
-        
-        # Individual meta-path weights
-        mp_path_masks = []
-        for i in range(len(self.mp_path_weights)):
-            path_mask = torch.sigmoid((self.mp_path_weights[i] - 0.5) / temp)
-            mp_path_masks.append(path_mask)
-        
-        return mp_att_mask, mp_path_masks
-
-    def get_schema_attention_masks(self):
-        """Generate schema attention pruning masks"""
-        temp = torch.clamp(self.attention_temperature, min=0.5, max=10.0)
-        
-        # Schema attention mask (for inter-attention mechanism)
-        sc_att_mask = torch.sigmoid((self.sc_attention_mask - self.sc_attention_threshold) / temp)
-        
-        # Individual node type weights
-        sc_type_masks = torch.sigmoid((self.sc_type_weights - 0.5) / temp)
-        
-        return sc_att_mask, sc_type_masks
-
-    def get_attention_pruning_loss(self):
-        """Calculate attention-focused pruning loss"""
-        if not self.enable_pruning:
-            return torch.tensor(0.0, device=next(self.parameters()).device)
-        
-        # Get attention masks
-        mp_att_mask, mp_path_masks = self.get_metapath_attention_masks()
-        sc_att_mask, sc_type_masks = self.get_schema_attention_masks()
-        
-        # Sparsity regularization - encourage attention pruning
-        attention_sparsity = 0.0
-        
-        # Meta-path attention sparsity
-        attention_sparsity += torch.mean(mp_att_mask)
-        for path_mask in mp_path_masks:
-            attention_sparsity += torch.mean(path_mask)
-        
-        # Schema attention sparsity
-        attention_sparsity += torch.mean(sc_att_mask)
-        attention_sparsity += torch.mean(sc_type_masks)
-        
-        # Normalize by number of components
-        num_components = 2 + len(mp_path_masks) + len(sc_type_masks)
-        avg_attention_sparsity = attention_sparsity / num_components
-        
-        # Target sparsity loss
-        target_loss = torch.abs(avg_attention_sparsity - self.target_attention_sparsity)
-        
-        # Structure preservation: prevent pruning of highly important attention components
-        structure_loss = 0.0
-        
-        # Preserve top-k% most important meta-path weights
-        top_k_ratio = 0.3  # Keep top 30% meta-paths
-        if len(mp_path_masks) > 1:
-            mp_values = torch.stack([mask.squeeze() for mask in mp_path_masks])
-            top_k = max(1, int(len(mp_path_masks) * top_k_ratio))
-            top_indices = torch.topk(mp_values, top_k, largest=True)[1]
-            
-            # Penalty for pruning top important paths
-            for idx in top_indices:
-                structure_loss += torch.max(torch.tensor(0.5, device=mp_values.device) - mp_path_masks[idx], 
-                                          torch.tensor(0.0, device=mp_values.device))
-        
-        # Preserve schema type diversity
-        if len(sc_type_masks) > 1:
-            # Encourage at least 50% of types to remain active
-            min_active_types = max(1, len(sc_type_masks) // 2)
-            active_types = int((sc_type_masks > 0.5).sum().item())
-            if active_types < min_active_types:
-                structure_loss += (min_active_types - active_types) * 0.1
-        
-        total_attention_loss = (attention_sparsity + target_loss) * self.attention_sparsity_weight + \
-                              structure_loss * self.structure_preservation_weight
-        return total_attention_loss
-
-    def apply_progressive_attention_pruning(self, pruning_ratios):
-        """Apply progressive attention pruning with advanced scheduling"""
-        if not self.enable_pruning:
-            return
-        
-        # Update target attention sparsity based on training progress
-        max_sparsity = pruning_ratios.get('max_attention_sparsity', 0.6)
-        min_sparsity = pruning_ratios.get('min_attention_sparsity', 0.2)
-        
-        # Gradually increase target sparsity during training
-        current_epoch = pruning_ratios.get('current_epoch', 0)
-        max_epochs = pruning_ratios.get('max_epochs', 100)
-        
-        # Use cosine annealing for smoother pruning progression
-        progress = min(current_epoch / max_epochs, 1.0)
-        cosine_progress = 0.5 * (1 - np.cos(np.pi * progress))  # Smooth S-curve
-        new_target = min_sparsity + (max_sparsity - min_sparsity) * cosine_progress
-        
-        self.target_attention_sparsity.data.fill_(new_target)
-        
-        # Dynamically adjust sparsity weight based on training phase
-        base_weight = pruning_ratios.get('attention_sparsity_weight', 0.005)
-        
-        # Reduce sparsity weight as training progresses to avoid over-pruning
-        if progress > 0.8:  # In final 20% of pruning
-            adjusted_weight = base_weight * 0.5  # Reduce weight for stability
-        elif progress > 0.6:  # In middle-late phase
-            adjusted_weight = base_weight * 0.8
-        else:  # Early-middle phase
-            adjusted_weight = base_weight
-            
-        self.attention_sparsity_weight.data.fill_(adjusted_weight)
-        
-        # Optional: Adjust temperature for harder pruning as training progresses
-        if 'adjust_temperature' in pruning_ratios and pruning_ratios['adjust_temperature']:
-            # Start with soft pruning (high temp), move to hard pruning (low temp)
-            initial_temp = 2.0
-            final_temp = 0.5
-            new_temp = initial_temp - (initial_temp - final_temp) * progress
-            self.attention_temperature.data.fill_(max(new_temp, 0.1))  # Minimum temperature
-
-    def get_attention_weights(self):
-        """Get current attention weights for analysis"""
-        if not self.enable_pruning:
-            return None, None, None, None
-        
-        mp_att_mask, mp_path_masks = self.get_metapath_attention_masks()
-        sc_att_mask, sc_type_masks = self.get_schema_attention_masks()
-        return mp_att_mask.detach(), mp_path_masks, sc_att_mask.detach(), sc_type_masks.detach()
-
-    def get_pruning_schedule_info(self, current_epoch, total_epochs=200):
-        """Get recommended pruning schedule information"""
-        schedule_info = {
-            'current_phase': '',
-            'should_prune': False,
-            'pruning_frequency': 0,
-            'recommended_params': {}
-        }
-        
-        # Determine current training phase
-        if current_epoch < 20:
-            schedule_info['current_phase'] = 'Warm-up (No Pruning)'
-            schedule_info['should_prune'] = False
-            schedule_info['recommendation'] = 'Let model stabilize, focus on knowledge distillation'
-            
-        elif current_epoch < 50:
-            schedule_info['current_phase'] = 'Early Pruning'
-            schedule_info['should_prune'] = (current_epoch % 5 == 0)
-            schedule_info['pruning_frequency'] = 5
-            schedule_info['recommended_params'] = {
-                'min_attention_sparsity': 0.1,
-                'max_attention_sparsity': 0.6,
-                'attention_sparsity_weight': 0.001,
-                'adjust_temperature': True
-            }
-            schedule_info['recommendation'] = 'Gentle pruning start, every 5 epochs'
-            
-        elif current_epoch < 100:
-            schedule_info['current_phase'] = 'Aggressive Pruning'
-            schedule_info['should_prune'] = (current_epoch % 3 == 0)
-            schedule_info['pruning_frequency'] = 3
-            schedule_info['recommended_params'] = {
-                'min_attention_sparsity': 0.1,
-                'max_attention_sparsity': 0.7,
-                'attention_sparsity_weight': 0.005,
-                'adjust_temperature': True
-            }
-            schedule_info['recommendation'] = 'Main pruning phase, every 3 epochs'
-            
-        else:
-            schedule_info['current_phase'] = 'Fine-tuning'
-            schedule_info['should_prune'] = (current_epoch % 10 == 0)
-            schedule_info['pruning_frequency'] = 10
-            schedule_info['recommended_params'] = {
-                'min_attention_sparsity': 0.1,
-                'max_attention_sparsity': 0.8,
-                'attention_sparsity_weight': 0.002,
-                'adjust_temperature': False
-            }
-            schedule_info['recommendation'] = 'Stabilize pruned model, every 10 epochs'
-            
-        return schedule_info
-
-    def get_sparsity_stats(self):
-        """Get current attention pruning statistics"""
-        if not self.enable_pruning:
-            return {
-                'metapath_attention_sparsity': 1.0, 
-                'schema_attention_sparsity': 1.0,
-                'metapath_path_sparsity': 1.0,
-                'schema_type_sparsity': 1.0,
-                'attention_stats': {}
-            }
-
-        # Get attention masks
-        mp_att_mask, mp_path_masks = self.get_metapath_attention_masks()
-        sc_att_mask, sc_type_masks = self.get_schema_attention_masks()
-        
-        # Calculate attention sparsity (values close to 1 = kept, close to 0 = pruned)
-        mp_att_sparsity = torch.mean(mp_att_mask).item()
-        sc_att_sparsity = torch.mean(sc_att_mask).item()
-        
-        # Meta-path path-level sparsity
-        mp_path_sparsity = 0.0
-        for path_mask in mp_path_masks:
-            mp_path_sparsity += torch.mean(path_mask).item()
-        mp_path_sparsity /= len(mp_path_masks) if len(mp_path_masks) > 0 else 1
-        
-        # Schema type-level sparsity
-        sc_type_sparsity = torch.mean(sc_type_masks).item()
-        
-        # Attention statistics
-        attention_stats = {
-            'mp_attention_mean': torch.mean(self.mp_attention_mask).item(),
-            'sc_attention_mean': torch.mean(self.sc_attention_mask).item(),
-            'mp_attention_threshold': self.mp_attention_threshold.item(),
-            'sc_attention_threshold': self.sc_attention_threshold.item(),
-            'attention_temperature': self.attention_temperature.item(),
-            'target_attention_sparsity': self.target_attention_sparsity.item()
-        }
-
-        return {
-            'metapath_attention_sparsity': mp_att_sparsity,
-            'schema_attention_sparsity': sc_att_sparsity,
-            'metapath_path_sparsity': mp_path_sparsity,
-            'schema_type_sparsity': sc_type_sparsity,
-            'attention_stats': attention_stats
-        }
-
-    def reset_attention_parameters(self):
-        """Reset attention pruning parameters for fresh training (optional)"""
-        if not self.enable_pruning:
-            return
-            
-        with torch.no_grad():
-            # Reset attention masks to encourage learning from scratch
-            self.mp_attention_mask.data.fill_(1.0)
-            self.sc_attention_mask.data.fill_(1.0)
-            
-            # Reset path and type weights
-            for path_weight in self.mp_path_weights:
-                path_weight.data.fill_(1.0)
-            self.sc_type_weights.data.fill_(1.0)
-            
-            # Reset attention thresholds
-            self.mp_attention_threshold.data.fill_(0.3)
-            self.sc_attention_threshold.data.fill_(0.3)
-            
-            # Reset temperature
-            self.attention_temperature.data.fill_(2.0)
+        return torch.sigmoid(self.mp_fusion_weight).item(), torch.sigmoid(self.sc_fusion_weight).item()
 
 # SimCLR
 def infoNCE(embeds1, embeds2, nodes, temperature):
@@ -916,37 +770,211 @@ def subspace_contrastive_loss_hetero(mp_embeds, sc_embeds, mp_masks, sc_masks,
     total_loss = (mp_loss + sc_loss) * weight
     return total_loss
 
-class MyHeCoKD(nn.Module):
-    """Knowledge Distillation framework for heterogeneous graph learning with hierarchical support"""
-    def __init__(self, teacher=None, student=None, middle_teacher=None):
-        super(MyHeCoKD, self).__init__()
-        self.teacher = teacher
-        self.student = student
-        self.middle_teacher = middle_teacher
-        
-        # Determine distillation mode
-        if self.middle_teacher is not None:
-            if self.teacher is not None:
-                self.mode = "teacher_to_middle"  # Stage 1
-            else:
-                self.mode = "middle_to_student"  # Stage 2
-        else:
-            self.mode = "direct"  # Direct distillation
-        
-        print(f"KD Mode: {self.mode}")
+class DualTeacherKD(nn.Module):
+    """
+    Dual-Teacher Knowledge Distillation Framework
     
-    def forward(self):
-        pass
+    Two specialized teachers work together:
+    1. Teacher: Provides knowledge distillation to student
+    2. Pruning Expert: Provides pruning guidance based on augmented graph learning
+    """
+    def __init__(self, teacher=None, student=None, pruning_expert=None, middle_teacher=None):
+        super(DualTeacherKD, self).__init__()
+        self.teacher = teacher  # Main teacher for knowledge distillation
+        self.student = student  # Student model
+        # Backward compatibility: accept both pruning_expert and middle_teacher
+        self.pruning_expert = pruning_expert or middle_teacher  # Specialized pruning expert teacher
+        
+        # Determine operation mode
+        if self.teacher is not None and self.pruning_expert is not None and self.student is not None:
+            self.mode = "dual_teacher_training"  # Full dual teacher system
+        elif self.pruning_expert is not None and self.student is not None:
+            self.mode = "expert_guided_training"  # Only pruning expert guides student
+        elif self.teacher is not None and self.student is not None:
+            self.mode = "standard_kd"  # Standard knowledge distillation
+        else:
+            self.mode = "single_model"  # Single model training
+        
+        # Initialize prediction heads for knowledge alignment
+        if self.student is not None and self.teacher is not None:
+            student_dim = getattr(self.student, 'student_dim', 512)
+            teacher_dim = getattr(self.teacher, 'hidden_dim', 512)
+            
+            # Knowledge alignment head
+            self.knowledge_alignment = nn.Sequential(
+                nn.Linear(student_dim, teacher_dim // 2),
+                nn.ReLU(),
+                nn.Linear(teacher_dim // 2, teacher_dim),
+                nn.LayerNorm(teacher_dim)
+            )
+            
+        if self.student is not None and self.pruning_expert is not None:
+            student_dim = getattr(self.student, 'student_dim', 512)
+            expert_dim = getattr(self.pruning_expert, 'expert_dim', 512)
+            
+            # Pruning guidance alignment head
+            self.pruning_alignment = nn.Sequential(
+                nn.Linear(student_dim, expert_dim // 2),
+                nn.ReLU(),
+                nn.Linear(expert_dim // 2, expert_dim),
+                nn.LayerNorm(expert_dim)
+            )
+        
+        print(f"Dual-Teacher KD Mode: {self.mode}")
+    
+    def forward(self, feats, pos, mps, nei_index, distill_config=None):
+        """
+        Dual-teacher forward pass with simultaneous knowledge distillation and pruning guidance
+        """
+        if self.mode == "dual_teacher_training":
+            return self._dual_teacher_forward(feats, pos, mps, nei_index, distill_config)
+        elif self.mode == "expert_guided_training":
+            return self._expert_guided_forward(feats, pos, mps, nei_index)
+        elif self.mode == "standard_kd":
+            return self._standard_kd_forward(feats, pos, mps, nei_index, distill_config)
+        else:
+            return self._single_model_forward(feats, pos, mps, nei_index)
+    
+    def _dual_teacher_forward(self, feats, pos, mps, nei_index, distill_config):
+        """Main dual-teacher training logic"""
+        # Get pruning guidance from expert teacher
+        pruning_guidance = self.pruning_expert.get_pruning_guidance(feats, mps, nei_index)
+        
+        # Student forward pass with pruning guidance
+        student_loss = self.student(feats, pos, mps, nei_index, pruning_guidance=pruning_guidance)
+        
+        # Knowledge distillation from main teacher
+        kd_loss = self.calc_knowledge_distillation_loss(feats, mps, nei_index, distill_config)
+        
+        # Expert guidance alignment loss
+        expert_alignment_loss = self.calc_expert_alignment_loss(feats, mps, nei_index, pruning_guidance)
+        
+        # Combine losses
+        total_loss = student_loss + kd_loss * 0.5 + expert_alignment_loss * 0.3
+        
+        return {
+            'total_loss': total_loss,
+            'student_loss': student_loss,
+            'kd_loss': kd_loss,
+            'expert_loss': expert_alignment_loss,
+            'pruning_guidance': pruning_guidance
+        }
+    
+    def _expert_guided_forward(self, feats, pos, mps, nei_index):
+        """Forward with only pruning expert guidance"""
+        pruning_guidance = self.pruning_expert.get_pruning_guidance(feats, mps, nei_index)
+        student_loss = self.student(feats, pos, mps, nei_index, pruning_guidance=pruning_guidance)
+        expert_alignment_loss = self.calc_expert_alignment_loss(feats, mps, nei_index, pruning_guidance)
+        
+        total_loss = student_loss + expert_alignment_loss * 0.4
+        
+        return {
+            'total_loss': total_loss,
+            'student_loss': student_loss,
+            'expert_loss': expert_alignment_loss,
+            'pruning_guidance': pruning_guidance
+        }
+    
+    def _standard_kd_forward(self, feats, pos, mps, nei_index, distill_config):
+        """Standard knowledge distillation"""
+        student_loss = self.student(feats, pos, mps, nei_index)
+        kd_loss = self.calc_knowledge_distillation_loss(feats, mps, nei_index, distill_config)
+        
+        total_loss = student_loss + kd_loss * 0.7
+        
+        return {
+            'total_loss': total_loss,
+            'student_loss': student_loss,
+            'kd_loss': kd_loss
+        }
+    
+    def _single_model_forward(self, feats, pos, mps, nei_index):
+        """Single model training (fallback)"""
+        if self.student is not None:
+            loss = self.student(feats, pos, mps, nei_index)
+        elif self.teacher is not None:
+            loss = self.teacher(feats, pos, mps, nei_index)
+        elif self.pruning_expert is not None:
+            loss = self.pruning_expert(feats, pos, mps, nei_index)
+        else:
+            raise ValueError("No model available for training")
+            
+        return {'total_loss': loss, 'student_loss': loss}
     
     def get_teacher_student_pair(self):
         """Get appropriate teacher-student pair based on current mode"""
-        if self.mode == "teacher_to_middle":
-            return self.teacher, self.middle_teacher
-        elif self.mode == "middle_to_student":
-            return self.middle_teacher, self.student  
-        else:  # direct
+        if self.mode in ["dual_teacher_training", "standard_kd"]:
             return self.teacher, self.student
+        elif self.mode == "expert_guided_training":
+            return self.pruning_expert, self.student
+        else:
+            return None, None
     
+    def calc_knowledge_distillation_loss(self, feats, mps, nei_index, distill_config=None):
+        """Calculate knowledge distillation loss between teacher and student"""
+        if self.teacher is None or self.student is None:
+            return torch.tensor(0.0, device=feats[0].device)
+        
+        # Get representations from both models
+        with torch.no_grad():
+            teacher_mp, teacher_sc = self.teacher.get_representations(feats, mps, nei_index)
+            
+        student_mp, student_sc = self.student.get_representations(feats, mps, nei_index)
+        
+        # Align dimensions if necessary
+        if hasattr(self, 'knowledge_alignment'):
+            student_mp_aligned = self.knowledge_alignment(student_mp)
+            student_sc_aligned = self.knowledge_alignment(student_sc)
+        else:
+            # Simple projection if dimensions don't match
+            if student_mp.size(-1) != teacher_mp.size(-1):
+                student_mp_aligned = F.linear(student_mp, 
+                    torch.randn(teacher_mp.size(-1), student_mp.size(-1), device=student_mp.device))
+                student_sc_aligned = F.linear(student_sc,
+                    torch.randn(teacher_sc.size(-1), student_sc.size(-1), device=student_sc.device))
+            else:
+                student_mp_aligned = student_mp
+                student_sc_aligned = student_sc
+        
+        # Temperature for soft targets
+        temperature = distill_config.get('temperature', 3.0) if distill_config else 3.0
+        
+        # KL divergence loss for soft targets
+        mp_kd_loss = KLDiverge(teacher_mp, student_mp_aligned, temperature)
+        sc_kd_loss = KLDiverge(teacher_sc, student_sc_aligned, temperature)
+        
+        return (mp_kd_loss + sc_kd_loss) * 0.5
+    
+    def calc_expert_alignment_loss(self, feats, mps, nei_index, pruning_guidance):
+        """Calculate alignment loss between student and pruning expert guidance"""
+        if self.pruning_expert is None or self.student is None:
+            return torch.tensor(0.0, device=feats[0].device)
+        
+        # Get student representations
+        student_mp, student_sc = self.student.get_representations(feats, mps, nei_index)
+        
+        # Get expert representations (without augmentation for alignment)
+        expert_mp, expert_sc = self.pruning_expert.get_representations(feats, mps, nei_index, use_augmentation=False)
+        
+        # Align dimensions
+        if hasattr(self, 'pruning_alignment'):
+            student_mp_aligned = self.pruning_alignment(student_mp)
+            student_sc_aligned = self.pruning_alignment(student_sc)
+        else:
+            student_mp_aligned = student_mp
+            student_sc_aligned = student_sc
+        
+        # Structure consistency loss
+        mp_consistency = F.mse_loss(F.normalize(student_mp_aligned, p=2, dim=1), 
+                                   F.normalize(expert_mp, p=2, dim=1))
+        sc_consistency = F.mse_loss(F.normalize(student_sc_aligned, p=2, dim=1), 
+                                   F.normalize(expert_sc, p=2, dim=1))
+        
+        # Pruning guidance alignment (computed in student model)
+        total_loss = (mp_consistency + sc_consistency) * 0.5
+        
+        return total_loss
+
     def calc_distillation_loss(self, feats, mps, nei_index, pos,
                               nodes=None, distill_config=None):
         """
@@ -962,6 +990,13 @@ class MyHeCoKD(nn.Module):
         """
         # Get appropriate teacher-student pair
         teacher, student = self.get_teacher_student_pair()
+        
+        # If no valid teacher-student pair, return zero loss
+        if teacher is None or student is None:
+            return torch.tensor(0.0, device=feats[0].device), {
+                'distill_loss': torch.tensor(0.0, device=feats[0].device),
+                'total_loss': torch.tensor(0.0, device=feats[0].device)
+            }
         
         if distill_config is None:
             distill_config = get_distillation_config(kd_params())
@@ -1183,7 +1218,7 @@ class MyHeCoKD(nn.Module):
 def create_teacher_student_models(hidden_dim, feats_dim_list, feat_drop, attn_drop, 
                                  P, sample_rate, nei_num, tau, lam, compression_ratio=0.5):
     """
-    Create teacher and student models
+    Create teacher and student models (legacy function)
     
     Returns:
         teacher: Full-size teacher model
@@ -1196,9 +1231,56 @@ def create_teacher_student_models(hidden_dim, feats_dim_list, feat_drop, attn_dr
     student = StudentMyHeCo(hidden_dim, feats_dim_list, feat_drop, attn_drop, 
                            P, sample_rate, nei_num, tau, lam, compression_ratio)
     
-    kd_model = MyHeCoKD(teacher=teacher, student=student)
+    kd_model = DualTeacherKD(teacher=teacher, student=student)
     
     return teacher, student, kd_model
+
+
+def create_dual_teacher_system(hidden_dim, feats_dim_list, feat_drop, attn_drop, 
+                              P, sample_rate, nei_num, tau, lam, 
+                              student_compression=0.5,
+                              augmentation_config=None):
+    """
+    Create the complete dual-teacher system
+    
+    Returns:
+        teacher: Main teacher for knowledge distillation
+        pruning_expert: Specialized pruning expert teacher
+        student: Student model with pruning capabilities
+        dual_kd: Dual-teacher knowledge distillation framework
+    """
+    # Main teacher
+    teacher = MyHeCo(hidden_dim, feats_dim_list, feat_drop, attn_drop, 
+                     P, sample_rate, nei_num, tau, lam)
+    
+    # Pruning expert teacher
+    pruning_expert = PruningExpertTeacher(
+        feats_dim_list=feats_dim_list,
+        hidden_dim=hidden_dim,
+        attn_drop=attn_drop,
+        feat_drop=feat_drop,
+        P=P,
+        sample_rate=sample_rate,
+        nei_num=nei_num,
+        tau=tau,
+        lam=lam,
+        augmentation_config=augmentation_config
+    )
+    
+    # Student model
+    student = StudentMyHeCo(hidden_dim, feats_dim_list, feat_drop, attn_drop, 
+                           P, sample_rate, nei_num, tau, lam, 
+                           compression_ratio=student_compression, enable_pruning=True)
+    
+    # Dual-teacher framework
+    dual_kd = DualTeacherKD(teacher=teacher, student=student, pruning_expert=pruning_expert)
+    
+    return teacher, pruning_expert, student, dual_kd
+
+
+# Compatibility aliases for existing code
+MiddleMyHeCo = PruningExpertTeacher  # Backward compatibility
+MyHeCoKD = DualTeacherKD  # Backward compatibility
 
 
 def count_parameters(model):
