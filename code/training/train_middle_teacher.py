@@ -5,7 +5,6 @@ Stage 1 of hierarchical distillation: Teacher → Middle Teacher
 """
 
 import sys
-import os
 import torch
 import numpy as np
 from tqdm.auto import tqdm
@@ -13,8 +12,8 @@ from tqdm.auto import tqdm
 # Add utils to path
 sys.path.append('./utils')
 
-from models.kd_heco import MiddleMyHeCo, count_parameters
-from models.kd_params import kd_params
+from models.kd_heco import PruningExpertTeacher, count_parameters
+from models.kd_params import kd_params, get_augmentation_config
 from utils.load_data import load_data
 from utils.evaluate import evaluate_node_classification
 
@@ -42,10 +41,6 @@ class MiddleTeacherTrainer:
                 args.type_num = [3492, 2502, 33401, 4459]  # [movie, director, actor, writer]
                 args.nei_num = 3
 
-        # Set default ratio if not provided
-        if not hasattr(args, 'ratio'):
-            args.ratio = ["80_10_10"]
-            
         self.nei_index, self.feats, self.mps, self.pos, self.label, self.idx_train, self.idx_val, self.idx_test = load_data(args.dataset, args.ratio, args.type_num)
         
         # Dataset specific parameters
@@ -87,22 +82,8 @@ class MiddleTeacherTrainer:
         # Load pre-trained teacher
         print("Loading model...")
         
-        # Setup augmentation config for dual-teacher system (now with meta-path connections!)
-        self.augmentation_config = {
-            'use_node_masking': getattr(self.args, 'use_node_masking', True),
-            'use_meta_path_connections': getattr(self.args, 'use_meta_path_connections', True),  # NEW: Connect all nodes via meta-paths
-            'use_autoencoder': getattr(self.args, 'use_autoencoder', True),
-            'mask_rate': getattr(self.args, 'mask_rate', 0.15),  # Higher for better robustness
-            'remask_rate': getattr(self.args, 'remask_rate', 0.25),
-            'connection_strength': getattr(self.args, 'connection_strength', 0.2),  # NEW: Meta-path connection strength
-            'num_remasking': getattr(self.args, 'num_remasking', 3),  # More remasking for expert training
-            'autoencoder_hidden_dim': self.args.hidden_dim // 2,
-            'autoencoder_layers': 3,  # Deeper for better learning
-            'reconstruction_weight': getattr(self.args, 'reconstruction_weight', 0.2)  # Higher weight for reconstruction
-        }
-        
         # Initialize middle teacher with augmentation (now PruningExpertTeacher)
-        self.middle_teacher = MiddleMyHeCo(
+        self.middle_teacher = PruningExpertTeacher(
             feats_dim_list=self.feats_dim_list,
             hidden_dim=self.args.hidden_dim,
             attn_drop=self.args.attn_drop,
@@ -112,7 +93,7 @@ class MiddleTeacherTrainer:
             nei_num=self.args.nei_num,
             tau=self.args.tau,
             lam=self.args.lam,
-            augmentation_config=self.augmentation_config
+            augmentation_config=get_augmentation_config(self.args)
         ).to(self.device)
         
         # Initialize optimized optimizer for RTX 3090
@@ -127,14 +108,6 @@ class MiddleTeacherTrainer:
         # Print model info
         middle_params = count_parameters(self.middle_teacher)
         print(f"Middle teacher model: {middle_params:,} parameters")
-        
-    def get_contrastive_nodes(self, batch_size=4096):  # Increased for RTX 3090
-        """Get random nodes for contrastive learning - optimized for RTX 3090"""
-        total_nodes = self.feats[0].size(0)
-        if batch_size >= total_nodes:
-            return torch.arange(total_nodes, device=self.device)
-        else:
-            return torch.randperm(total_nodes, device=self.device)[:batch_size]
     
     def train_epoch(self):
         """Train for one epoch"""
@@ -194,7 +167,6 @@ class MiddleTeacherTrainer:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'loss': self.best_loss,
             'args': self.args,
-            'augmentation_config': self.augmentation_config
         }
         
         # Save regular checkpoint
@@ -209,13 +181,14 @@ class MiddleTeacherTrainer:
     
     def train(self):
         """Main training loop"""
-        print("Starting pruning expert training...")
+        # FIX 2.7: Updated terminology - this is an augmentation expert, not a pruning expert
+        print("Starting augmentation expert training...")
+        print("Note: This model learns from augmented graphs, not pruning")
         print(f"Training for {self.args.stage1_epochs} epochs")
         print(f"Patience: {self.args.patience}")
-        print(f"Augmentation config: {self.augmentation_config}")
         print("-" * 60)
         
-        progress_bar = tqdm(range(self.args.stage1_epochs), desc="Pruning Expert Training", leave=False, dynamic_ncols=True)
+        progress_bar = tqdm(range(self.args.stage1_epochs), desc="Augmentation Expert Training", leave=False, dynamic_ncols=True)
         for epoch in progress_bar:
             # Epoch-level NumPy seeding for reproducibility of any np-based sampling
             np.random.seed(self.args.seed + epoch)
@@ -284,7 +257,9 @@ class MiddleTeacherTrainer:
         middle_params = count_parameters(self.middle_teacher)
         print(f"Middle teacher parameters: {middle_params:,}")
         
-        print("Pruning expert training completed!")
+        # FIX 2.7: Clarified terminology
+        print("Augmentation expert training completed!")
+        print("Note: This model provides augmentation guidance, not actual pruning")
         return accuracy, macro_f1, micro_f1
 
 def main():

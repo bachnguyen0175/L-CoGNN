@@ -33,16 +33,9 @@ fi
 
 # Training configuration
 DATASET="acm"
-TEACHER_PATH="../../results/teacher_heco_acm.pkl"
-MIDDLE_TEACHER_PATH="../../results/middle_teacher_heco_acm.pkl"
-STUDENT_SAVE_PATH="../../results/student_heco_acm.pkl"
-
-# Student training parameters - main teacher for KD, middle teacher for pruning only
-STUDENT_EPOCHS=500
-STUDENT_LR=0.0008
-STUDENT_COMPRESSION=0.6  # Less aggressive compression for better learning
-DISTILL_WEIGHT=0.8       # Full weight for main teacher knowledge distillation
-PRUNING_WEIGHT=0.3       # Moderate weight for middle teacher pruning guidance
+TEACHER_PATH="../results/teacher_heco_acm.pkl"
+MIDDLE_TEACHER_PATH="../results/middle_teacher_heco_acm.pkl"
+STUDENT_SAVE_PATH="../results/student_heco_acm.pkl"
 
 echo "Configuration:"
 echo "  Dataset: $DATASET"
@@ -55,34 +48,22 @@ echo "  Middle teacher path: $MIDDLE_TEACHER_PATH"
 echo ""
 
 # Run dual-teacher student training
-python ../training/train_student.py \
-    --dataset $DATASET \
+cd .. && PYTHONPATH=. ../.venv/bin/python training/train_student.py \
+    $DATASET \
     --teacher_model_path $TEACHER_PATH \
     --middle_teacher_path $MIDDLE_TEACHER_PATH \
     --student_save_path $STUDENT_SAVE_PATH \
-    --stage2_epochs $STUDENT_EPOCHS \
-    --lr $STUDENT_LR \
-    --stage2_distill_weight $DISTILL_WEIGHT \
-    --pruning_weight $PRUNING_WEIGHT \
-    --student_compression_ratio $STUDENT_COMPRESSION \
-    --kd_temperature 3.0 \
-    --patience 30 \
-    --save_interval 20 \
-    --eval_interval 10 \
-    --log_interval 5 \
+    --stage2_epochs=500 \
+    --lr=0.0008 \
+    --stage2_distill_weight=0.8 \
+    --pruning_weight=0.3 \
+    --student_compression_ratio=0.5 \
     $GPU_FLAG
 
 if [ $? -eq 0 ]; then
     echo ""
     echo "✅ Dual-teacher student training completed successfully!"
     echo "📁 Student model saved to: $STUDENT_SAVE_PATH"
-    echo ""
-    echo "📊 Model Summary:"
-    echo "   - Main Teacher: Primary knowledge distillation source"
-    echo "   - Middle Teacher: Structural pruning guidance only (NO knowledge distillation)"
-    echo "   - Student: Knowledge from main teacher + pruning guidance from middle teacher"
-    echo ""
-    echo "🎯 Next Step: Evaluate the student model using bash 4_evaluate.sh"
 else
     echo "❌ Dual-teacher student training failed!"
     exit 1

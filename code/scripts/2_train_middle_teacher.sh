@@ -24,7 +24,6 @@ cd .. && PYTHONPATH=. ../.venv/bin/python training/train_middle_teacher.py \
     $DATASET \
     --hidden_dim=64 \
     --stage1_epochs=300 \
-    --patience=30 \
     --lr=0.0008 \
     --tau=0.8 \
     --feat_drop=0.3 \

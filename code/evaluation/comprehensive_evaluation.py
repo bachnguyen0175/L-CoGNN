@@ -8,7 +8,7 @@ This script evaluates teacher and student models on:
 3. Node Clustering (NMI, ARI, Accuracy, Modularity)
 
 Usage:
-    python comprehensive_evaluation.py --dataset acm --teacher_path teacher.pkl --student_path student.pkl
+    python comprehensive_evaluation.py --dataset acm --teacher_model_path teacher.pkl --student_path student.pkl
 """
 
 import os
@@ -21,7 +21,8 @@ from datetime import datetime
 # Add utils to path
 sys.path.append('./utils')
 
-from models.kd_heco import MyHeCo, StudentMyHeCo, MiddleMyHeCo
+from models.kd_heco import MyHeCo, StudentMyHeCo, PruningExpertTeacher
+from models import kd_params
 from utils.load_data import load_data
 from utils.evaluate import (
     evaluate_node_classification,
@@ -188,17 +189,13 @@ class ComprehensiveEvaluator:
             augmentation_config = {
                 'use_node_masking': getattr(self.args, 'use_node_masking', True),
                 'use_edge_augmentation': getattr(self.args, 'use_edge_augmentation', True),
-                'use_autoencoder': getattr(self.args, 'use_autoencoder', True),
                 'mask_rate': getattr(self.args, 'mask_rate', 0.1),
                 'remask_rate': getattr(self.args, 'remask_rate', 0.3),
                 'edge_drop_rate': getattr(self.args, 'edge_drop_rate', 0.1),
-                'num_remasking': getattr(self.args, 'num_remasking', 2),
-                'autoencoder_hidden_dim': self.args.hidden_dim // 2,  # Half of main hidden dim
-                'autoencoder_layers': 2,
-                'reconstruction_weight': getattr(self.args, 'reconstruction_weight', 0.1)
+                'num_remasking': getattr(self.args, 'num_remasking', 2)
             }
 
-            model = MiddleMyHeCo(
+            model = PruningExpertTeacher(
                 feats_dim_list=self.feats_dim_list,
                 hidden_dim=self.args.hidden_dim,
                 attn_drop=self.args.attn_drop,
@@ -406,19 +403,19 @@ class ComprehensiveEvaluator:
         print(f"Device: {self.device}")
 
         # Evaluate Teacher Model
-        if self.args.teacher_path and os.path.exists(self.args.teacher_path):
-            print(f"\nLoading teacher model: {self.args.teacher_path}")
-            teacher_model = self.load_model(self.args.teacher_path, 'teacher')
+        if self.args.teacher_model_path and os.path.exists(self.args.teacher_model_path):
+            print(f"\nLoading teacher model: {self.args.teacher_model_path}")
+            teacher_model = self.load_model(self.args.teacher_model_path, 'teacher')
             teacher_results = self.evaluate_single_model(teacher_model, "Teacher", "teacher")
             self.results['models']['teacher'] = teacher_results
         else:
-            print(f"⚠ Teacher model not found: {self.args.teacher_path}")
+            print(f"⚠ Teacher model not found: {self.args.teacher_model_path}")
             return None
 
         # Evaluate Student Model
-        if self.args.student_path and os.path.exists(self.args.student_path):
-            print(f"\nLoading student model: {self.args.student_path}")
-            student_model = self.load_model(self.args.student_path, 'student')
+        if self.args.student_model_path and os.path.exists(self.args.student_model_path):
+            print(f"\nLoading student model: {self.args.student_model_path}")
+            student_model = self.load_model(self.args.student_model_path, 'student')
             student_results = self.evaluate_single_model(student_model, "Student", "student")
             self.results['models']['student'] = student_results
 
@@ -427,7 +424,7 @@ class ComprehensiveEvaluator:
             self.results['comparison'] = comparison
 
         else:
-            print(f"⚠ Student model not found: {self.args.student_path}")
+            print(f"⚠ Student model not found: {self.args.student_model_path}")
 
         # Evaluate Middle Teacher (if provided)
         if hasattr(self.args, 'middle_teacher_path') and self.args.middle_teacher_path:
@@ -447,37 +444,7 @@ class ComprehensiveEvaluator:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Comprehensive evaluation for all three downstream tasks')
-
-    # Dataset parameters
-    parser.add_argument('--dataset', type=str, default='acm', choices=['acm', 'dblp', 'aminer', 'freebase'],
-                       help='Dataset name')
-
-    # Model paths
-    parser.add_argument('--teacher_path', type=str, required=True,
-                       help='Path to teacher model checkpoint')
-    parser.add_argument('--student_path', type=str, required=True,
-                       help='Path to student model checkpoint')
-    parser.add_argument('--middle_teacher_path', type=str, default=None,
-                       help='Path to middle teacher model checkpoint (optional)')
-
-    # Model parameters
-    parser.add_argument('--hidden_dim', type=int, default=64, help='Hidden dimension')
-    parser.add_argument('--feat_drop', type=float, default=0.3, help='Feature dropout')
-    parser.add_argument('--attn_drop', type=float, default=0.5, help='Attention dropout')
-    parser.add_argument('--tau', type=float, default=0.8, help='Temperature parameter')
-    parser.add_argument('--lam', type=float, default=0.5, help='Lambda parameter')
-    parser.add_argument('--sample_rate', nargs='+', type=int, default=[7, 1], help='Sample rates')
-
-    # Evaluation parameters
-    parser.add_argument('--eva_lr', type=float, default=0.05, help='Evaluation learning rate')
-    parser.add_argument('--eva_wd', type=float, default=0, help='Evaluation weight decay')
-
-    # System parameters
-    parser.add_argument('--gpu', type=int, default=0, help='GPU device (-1 for CPU)')
-    parser.add_argument('--output_path', type=str, default=None, help='Output path for results JSON')
-
-    args = parser.parse_args()
+    args = kd_params()
 
     # Set dataset-specific parameters
     if args.dataset == "acm":

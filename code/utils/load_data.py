@@ -60,9 +60,9 @@ def load_acm(ratio, type_num):
     pap = sp.load_npz(path + "pap.npz")
     psp = sp.load_npz(path + "psp.npz")
     pos = sp.load_npz(path + "pos.npz")
-    train = [np.load(path + "train_" + str(i) + ".npy") for i in ratio]
-    test = [np.load(path + "test_" + str(i) + ".npy") for i in ratio]
-    val = [np.load(path + "val_" + str(i) + ".npy") for i in ratio]
+    train = [np.load(path + "train_" + str(ratio) + ".npy")]
+    test = [np.load(path + "test_" + str(ratio) + ".npy")]
+    val = [np.load(path + "val_" + str(ratio) + ".npy")]
 
     label = th.FloatTensor(label)
     nei_a = [th.LongTensor(i) for i in nei_a]
@@ -93,10 +93,10 @@ def load_dblp(ratio, type_num):
     apcpa = sp.load_npz(path + "apcpa.npz")
     aptpa = sp.load_npz(path + "aptpa.npz")
     pos = sp.load_npz(path + "pos.npz")
-    train = [np.load(path + "train_" + str(i) + ".npy") for i in ratio]
-    test = [np.load(path + "test_" + str(i) + ".npy") for i in ratio]
-    val = [np.load(path + "val_" + str(i) + ".npy") for i in ratio]
-    
+    train = [np.load(path + "train_" + str(ratio) + ".npy")]
+    test = [np.load(path + "test_" + str(ratio) + ".npy")]
+    val = [np.load(path + "val_" + str(ratio) + ".npy")]
+
     label = th.FloatTensor(label)
     nei_p = [th.LongTensor(i) for i in nei_p]
     feat_p = th.FloatTensor(preprocess_features(feat_p))
@@ -127,9 +127,9 @@ def load_aminer(ratio, type_num):
     pap = sp.load_npz(path + "pap.npz")
     prp = sp.load_npz(path + "prp.npz")
     pos = sp.load_npz(path + "pos.npz")
-    train = [np.load(path + "train_" + str(i) + ".npy") for i in ratio]
-    test = [np.load(path + "test_" + str(i) + ".npy") for i in ratio]
-    val = [np.load(path + "val_" + str(i) + ".npy") for i in ratio]
+    train = [np.load(path + "train_" + str(ratio) + ".npy")]
+    test = [np.load(path + "test_" + str(ratio) + ".npy")]
+    val = [np.load(path + "val_" + str(ratio) + ".npy")]
 
     label = th.FloatTensor(label)
     nei_a = [th.LongTensor(i) for i in nei_a]
@@ -165,9 +165,9 @@ def load_freebase(ratio, type_num):
     mdm = sp.load_npz(path + "mdm.npz")
     mwm = sp.load_npz(path + "mwm.npz")
     pos = sp.load_npz(path + "pos.npz")
-    train = [np.load(path + "train_" + str(i) + ".npy") for i in ratio]
-    test = [np.load(path + "test_" + str(i) + ".npy") for i in ratio]
-    val = [np.load(path + "val_" + str(i) + ".npy") for i in ratio]
+    train = [np.load(path + "train_" + str(ratio) + ".npy")]
+    test = [np.load(path + "test_" + str(ratio) + ".npy")]
+    val = [np.load(path + "val_" + str(ratio) + ".npy")]
 
     label = th.FloatTensor(label)
     nei_d = [th.LongTensor(i) for i in nei_d]

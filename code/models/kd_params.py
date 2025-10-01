@@ -12,10 +12,12 @@ def kd_params():
     # Basic model parameters
     parser.add_argument('--dataset', type=str, default="acm", choices=["acm", "dblp", "aminer", "freebase"])
     parser.add_argument('--hidden_dim', type=int, default=64)
-    parser.add_argument('--nb_epochs', type=int, default=1000)
-    parser.add_argument('--patience', type=int, default=50)
+    parser.add_argument('--nb_epochs', type=int, default=100)
+    parser.add_argument('--patience', type=int, default=30)
     parser.add_argument('--lr', type=float, default=0.0008)
     parser.add_argument('--l2_coef', type=float, default=0)
+    parser.add_argument('--batch_size', type=int, default=4096)
+    parser.add_argument('--ratio', type=str, default="80_10_10")
     
     # Model-specific parameters
     parser.add_argument('--tau', type=float, default=0.8)
@@ -28,14 +30,12 @@ def kd_params():
     parser.add_argument('--eva_lr', type=float, default=0.05)
     parser.add_argument('--eva_wd', type=float, default=0)
     
-    # Knowledge Distillation parameters
+    # Model paths
     parser.add_argument('--teacher_model_path', type=str, default=None, help="Path to pre-trained teacher model")
     parser.add_argument('--middle_teacher_path', type=str, default=None, help="Path to intermediate teacher model")
     parser.add_argument('--student_model_path', type=str, default=None, help="Path to pre-trained student model")
-    
-    # Student model configuration
-    parser.add_argument('--student_layers', type=int, default=None, help="Number of layers in student model")
-    
+    parser.add_argument('--student_dim', type=int, default=512, help="Dimension of student model embeddings (50% in default)")
+
     # Distillation loss weights
     parser.add_argument('--embedding_weight', type=float, default=0.5, help="Weight for embedding-level distillation")
     parser.add_argument('--prediction_weight', type=float, default=0.8, help="Weight for prediction-level distillation")
@@ -52,7 +52,7 @@ def kd_params():
     
     # Enhanced distillation weights
     parser.add_argument('--self_contrast_weight', type=float, default=0.2, help="Weight for self-contrast loss")
-    parser.add_argument('--subspace_weight', type=float, default=0.3, help="Weight for subspace contrastive loss")
+    parser.add_argument('--subspace_weight', type=float, default=0.2, help="Weight for subspace contrastive loss")
     parser.add_argument('--self_contrast_temp', type=float, default=1.0, help="Temperature for self-contrast")
     parser.add_argument('--subspace_temp', type=float, default=1.0, help="Temperature for subspace contrast")
 
@@ -64,8 +64,6 @@ def kd_params():
     parser.add_argument('--use_multi_stage', action='store_true', default=False, help="Use multi-stage training")
     parser.add_argument('--mask_epochs', type=int, default=100, help="Epochs for mask training stage")
     parser.add_argument('--fixed_epochs', type=int, default=200, help="Epochs for fixed training stage") 
-    parser.add_argument('--pruning_start', type=int, default=1, help="Start pruning run")
-    parser.add_argument('--pruning_end', type=int, default=5, help="End pruning run")
     parser.add_argument('--use_loosening', action='store_true', default=True, help="Use loosening factors in subspace learning")
     
     # Model saving
@@ -74,8 +72,8 @@ def kd_params():
     parser.add_argument('--middle_teacher_save_path', type=str, default="middle_teacher_heco.pkl", help="Middle teacher save path")
     
     # Hierarchical training parameters
-    parser.add_argument('--stage1_epochs', type=int, default=1000, help='Epochs for stage 1 (teacher -> middle teacher)')
-    parser.add_argument('--stage2_epochs', type=int, default=300, help='Epochs for stage 2 (middle teacher -> student)')
+    parser.add_argument('--stage1_epochs', type=int, default=300, help='Epochs for stage 1 (teacher -> middle teacher)')
+    parser.add_argument('--stage2_epochs', type=int, default=500, help='Epochs for stage 2 (middle teacher -> student)')
     parser.add_argument('--stage1_distill_weight', type=float, default=0.7, help='Distillation weight for stage 1')
     parser.add_argument('--stage2_distill_weight', type=float, default=0.8, help='Distillation weight for stage 2')
     parser.add_argument('--student_compression_ratio', type=float, default=0.5, help='Compression ratio for student')
@@ -85,7 +83,7 @@ def kd_params():
     parser.add_argument('--pruning_weight', type=float, default=0.3, help='Weight for pruning guidance loss')
     
     # Enhanced Knowledge Distillation parameters
-    parser.add_argument('--kd_temperature', type=float, default=4.0, help='Temperature for knowledge distillation')
+    parser.add_argument('--kd_temperature', type=float, default=2.5, help='Temperature for knowledge distillation')
     parser.add_argument('--use_kl_div', action='store_true', default=True, help='Use KL divergence for soft targets')
     parser.add_argument('--use_info_nce', action='store_true', default=True, help='Use InfoNCE contrastive loss')
     parser.add_argument('--subspace_loss_weight', type=float, default=0.1, help='Weight for subspace contrastive loss')
@@ -93,18 +91,21 @@ def kd_params():
     # Enhanced Augmentation parameters for Dual-Teacher System
     parser.add_argument('--use_node_masking', action='store_true', default=True, help="Use node feature masking augmentation")
     parser.add_argument('--use_meta_path_connections', action='store_true', default=True, help="Connect all nodes via meta-paths")
-    parser.add_argument('--use_autoencoder', action='store_true', default=True, help="Use autoencoder reconstruction")
     parser.add_argument('--mask_rate', type=float, default=0.15, help="Node masking rate (higher for robustness)")
     parser.add_argument('--remask_rate', type=float, default=0.25, help="Remasking rate during decoding")
     parser.add_argument('--connection_strength', type=float, default=0.2, help="Meta-path connection strength")
-    parser.add_argument('--edge_drop_rate', type=float, default=0.05, help="Edge dropping rate")
     parser.add_argument('--num_remasking', type=int, default=3, help="Number of remasking iterations")
-    parser.add_argument('--reconstruction_weight', type=float, default=0.2, help="Weight for reconstruction loss")
+    
+    # Link Prediction Enhancement parameters
+    parser.add_argument('--link_recon_weight', type=float, default=0.4, help="Weight for link reconstruction loss")
+    parser.add_argument('--relational_kd_weight', type=float, default=0.5, help="Weight for relational knowledge distillation")
+    parser.add_argument('--link_sample_rate', type=int, default=2000, help="Number of edges to sample for link prediction")
+    parser.add_argument('--relational_sample_nodes', type=int, default=512, help="Number of nodes to sample for relational KD")
     
     # Logging and evaluation
     parser.add_argument('--log_interval', type=int, default=10, help="Logging interval")
     parser.add_argument('--eval_interval', type=int, default=100, help="Evaluation interval")
-    parser.add_argument('--save_interval', type=int, default=500, help="Model saving interval")
+    parser.add_argument('--save_interval', type=int, default=100, help="Model saving interval")
     
     # Hardware
     parser.add_argument('--gpu', type=int, default=0, help="GPU device ID")
@@ -149,6 +150,17 @@ def get_distillation_config(args):
         'multi_level_weight': getattr(args, 'multi_level_weight', 0.4),
         'pruning_run': 0,  # Will be updated during training
         'use_loosening': getattr(args, 'use_loosening', True)
+    }
+
+def get_augmentation_config(args):
+    """Get augmentation configuration dictionary"""
+    return {
+        'use_node_masking': getattr(args, 'use_node_masking', True),
+        'use_meta_path_connections': getattr(args, 'use_meta_path_connections', True),
+        'mask_rate': getattr(args, 'mask_rate', 0.15),  # Higher masking for better robustness
+        'remask_rate': getattr(args, 'remask_rate', 0.25),
+        'connection_strength': getattr(args, 'connection_strength', 0.2),
+        'num_remasking': getattr(args, 'num_remasking', 3)
     }
 
 

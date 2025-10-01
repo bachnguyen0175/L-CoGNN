@@ -4,24 +4,31 @@
 echo "🟣 Stage 4: Evaluation and Comparison"
 echo "===================================="
 
+# Simple approach: work from scripts directory, use relative paths
 DATASET="acm"
-TEACHER_MODEL="../../results/teacher_heco_${DATASET}.pkl"
-MIDDLE_TEACHER_MODEL="../../results/middle_teacher_heco_${DATASET}.pkl"
-STUDENT_MODEL="../../results/student_heco_${DATASET}.pkl"
+# Paths relative to scripts directory for checking
+TEACHER_MODEL_CHECK="../../results/teacher_heco_${DATASET}.pkl"
+MIDDLE_TEACHER_MODEL_CHECK="../../results/middle_teacher_heco_${DATASET}.pkl"
+STUDENT_MODEL_CHECK="../../results/student_heco_${DATASET}.pkl"
+
+# Paths relative to code directory for evaluation scripts
+TEACHER_MODEL="../results/teacher_heco_${DATASET}.pkl"
+MIDDLE_TEACHER_MODEL="../results/middle_teacher_heco_${DATASET}.pkl"
+STUDENT_MODEL="../results/student_heco_${DATASET}.pkl"
 
 # Check if all models exist
 missing_models=()
 
-if [ ! -f "$TEACHER_MODEL" ]; then
-    missing_models+=("$TEACHER_MODEL")
+if [ ! -f "$TEACHER_MODEL_CHECK" ]; then
+    missing_models+=("$TEACHER_MODEL_CHECK")
 fi
 
-if [ ! -f "$MIDDLE_TEACHER_MODEL" ]; then
-    missing_models+=("$MIDDLE_TEACHER_MODEL")
+if [ ! -f "$MIDDLE_TEACHER_MODEL_CHECK" ]; then
+    missing_models+=("$MIDDLE_TEACHER_MODEL_CHECK")
 fi
 
-if [ ! -f "$STUDENT_MODEL" ]; then
-    missing_models+=("$STUDENT_MODEL")
+if [ ! -f "$STUDENT_MODEL_CHECK" ]; then
+    missing_models+=("$STUDENT_MODEL_CHECK")
 fi
 
 if [ ${#missing_models[@]} -gt 0 ]; then
@@ -37,40 +44,34 @@ if [ ${#missing_models[@]} -gt 0 ]; then
     exit 1
 fi
 
-echo "Evaluating all models on GPU..."
+echo "✅ All models found. Starting evaluation..."
+
+# Move to code directory and run evaluations using kd_params.py for all parameters
+cd ..
 
 echo ""
-cd ..
-TEACHER_MODEL_EVAL="../results/teacher_heco_${DATASET}.pkl"
-MIDDLE_TEACHER_MODEL_EVAL="../results/middle_teacher_heco_${DATASET}.pkl"
-STUDENT_MODEL_EVAL="../results/student_heco_${DATASET}.pkl"
-
 echo "📊 Running KD-specific evaluation..."
 PYTHONPATH=. ../.venv/bin/python evaluation/evaluate_kd.py \
-    --dataset="$DATASET" \
-    --teacher_model_path="$TEACHER_MODEL_EVAL" \
-    --student_model_path="$STUDENT_MODEL_EVAL" \
-    --hidden_dim=64 \
-    --gpu=0
+    --dataset "$DATASET" \
+    --teacher_model_path "$TEACHER_MODEL" \
+    --student_model_path "$STUDENT_MODEL"
 
 echo ""
 echo "📊 Running comprehensive evaluation on all three tasks..."
 PYTHONPATH=. ../.venv/bin/python evaluation/comprehensive_evaluation.py \
-    --dataset="$DATASET" \
-    --teacher_path="$TEACHER_MODEL_EVAL" \
-    --student_path="$STUDENT_MODEL_EVAL" \
-    --middle_teacher_path="$MIDDLE_TEACHER_MODEL_EVAL" \
-    --hidden_dim=64 \
-    --gpu=0
+    --dataset "$DATASET" \
+    --teacher_model_path "$TEACHER_MODEL" \
+    --student_model_path "$STUDENT_MODEL" \
+    --middle_teacher_path "$MIDDLE_TEACHER_MODEL"
 
 if [ $? -eq 0 ]; then
     echo ""
-    echo "✅ Evaluation completed!"
+    echo "✅ Evaluation completed successfully!"
     echo ""
     echo "📊 Model Summary:"
-    echo "   Teacher:        $TEACHER_MODEL"
-    echo "   Middle Teacher: $MIDDLE_TEACHER_MODEL"
-    echo "   Student:        $STUDENT_MODEL"
+    echo "   Teacher:        $TEACHER_MODEL_CHECK"
+    echo "   Middle Teacher: $MIDDLE_TEACHER_MODEL_CHECK"  
+    echo "   Student:        $STUDENT_MODEL_CHECK"
 else
     echo "❌ Evaluation failed!"
     exit 1

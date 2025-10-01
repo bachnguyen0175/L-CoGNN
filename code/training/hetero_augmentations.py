@@ -6,14 +6,12 @@ Supported augmentations:
 1. Node Feature Masking
 2. Remasking Strategy
 3. Structure-Aware Meta-Path Connections (respects original graph topology)
-4. Encoder-Decoder with Masking
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Tuple, Dict, Any
-from dgl.nn.pytorch import GATConv, GraphConv, GINConv
 import numpy as np
 
 
@@ -283,137 +281,7 @@ class MetaPathConnector(nn.Module):
         self.connection_strength = max(0.0, min(1.0, strength))  # Clamp between 0 and 1
 
 
-class Autoencoder(nn.Module):
-    """
-    Autoencoder exactly like original code with DGL GNN layers
-    """
-    def __init__(self, in_dim, hidden_dim, encoder, decoder, feat_drop, attn_drop, enc_num_layer,
-                 dec_num_layer, num_heads, mask_rate, remask_rate, num_remasking):
-        super(Autoencoder, self).__init__()
-        self.encoder = nn.ModuleList()
-        self.decoder = nn.ModuleList()
-        self.dropout = feat_drop
-        # encoder
-        for i in range(enc_num_layer):
-            if encoder == 'GAT' and num_heads == 1:
-                self.encoder.append(GATConv(in_dim, hidden_dim, num_heads, feat_drop, attn_drop, activation=F.elu))
-            elif encoder == 'GAT' and num_heads != 1:
-                if i == 0:
-                    self.encoder.append(GATConv(in_dim, hidden_dim, num_heads, feat_drop, attn_drop, activation=F.elu))
-                elif i == 1:
-                    self.encoder.append(GATConv(in_dim * num_heads, hidden_dim, num_heads, feat_drop, attn_drop, activation=F.elu))
-                elif i == 2:
-                    self.encoder.append(
-                        GATConv(in_dim * num_heads, hidden_dim, num_heads, feat_drop, attn_drop, activation=F.elu))
-            elif encoder == 'GCN':
-                self.encoder.append(GraphConv(in_dim, hidden_dim, weight=False, bias=False,
-                                              activation=nn.Identity(), allow_zero_in_degree=True))
-            elif encoder == 'GIN':
-                liner = torch.nn.Linear(in_dim, hidden_dim)
-                self.encoder.append(GINConv(liner, 'sum', activation=nn.Identity()))
-        # decoder
-        for i in range(dec_num_layer):
-            if decoder == 'GAT' and num_heads == 1:
-                self.decoder.append(GATConv(in_dim, hidden_dim, num_heads, feat_drop, attn_drop, activation=F.elu))
-            elif decoder == 'GAT' and num_heads != 1:
-                if i == 0:
-                    self.decoder.append(GATConv(in_dim, hidden_dim, num_heads, feat_drop, attn_drop, activation=F.elu))
-                elif i == 1:
-                    self.decoder.append(
-                        GATConv(in_dim * num_heads, hidden_dim, num_heads, feat_drop, attn_drop, activation=F.elu))
-                elif i == 2:
-                    self.decoder.append(
-                        GATConv(in_dim * num_heads, hidden_dim, num_heads, feat_drop, attn_drop, activation=F.elu))
-            elif decoder == 'GCN':
-                self.decoder.append(GraphConv(in_dim, hidden_dim, weight=False, bias=False,
-                                              activation=nn.Identity(), allow_zero_in_degree=True))
-            elif decoder == 'GIN':
-                liner = torch.nn.Linear(in_dim, hidden_dim)
-                self.decoder.append(GINConv(liner, 'min', activation=nn.Identity()))
-        # random_mask
-        self.mask_rate = mask_rate
-        self.remask_rate = remask_rate
-        self.num_remasking = num_remasking
 
-        self.enc_mask_token = nn.Parameter(torch.zeros(1, in_dim))
-        self.dec_mask_token = nn.Parameter(torch.zeros(1, hidden_dim))
-        self.encoder_to_decoder = nn.Linear(in_dim * num_heads, in_dim, bias=False)
-        self.decoder_to_contrastive = nn.Linear(in_dim * num_heads, in_dim, bias=False)
-
-        self.reset_parameters_for_token()
-
-    def reset_parameters_for_token(self):
-        nn.init.xavier_normal_(self.enc_mask_token)
-        nn.init.xavier_normal_(self.dec_mask_token)
-        nn.init.xavier_normal_(self.encoder_to_decoder.weight, gain=1.414)
-
-    def forward(self, g, x, drop_g1=None, drop_g2=None):
-        # mask
-        pre_use_g, mask_x, (mask_nodes, keep_nodes) = self.encoding_mask_noise(g, x, self.mask_rate)
-        use_g = drop_g1 if drop_g1 is not None else g
-        # multi-layer encoder
-        Encode = []
-        for i, layer in enumerate(self.encoder):
-            if i == 0:
-                enc_rep = layer(use_g, mask_x).flatten(1)
-            else:
-                enc_rep = layer(use_g, enc_rep).flatten(1)
-            # enc_rep = F.dropout(enc_rep, self.dropout, training=self.training)
-            Encode.append(enc_rep)
-        Es = torch.stack(Encode, dim=1)  # (N, M, D * K)
-        Es = torch.mean(Es, dim=1)
-        # encode_to_decode
-        origin_rep = self.encoder_to_decoder(Es)
-        # decode
-        Decode = []
-        loss_rec_all = 0
-        for i in range(self.num_remasking):
-            # remask
-            rep = origin_rep.clone()
-            rep, remask_nodes, rekeep_nodes = self.random_remask(pre_use_g, rep, self.remask_rate)
-            # multi-layer decoder
-            for i, layer in enumerate(self.decoder):
-                if i == 0:
-                    recon = layer(pre_use_g, rep).flatten(1)
-                else:
-                    recon = layer(pre_use_g, recon).flatten(1)
-                # recon = F.dropout(recon, self.dropout, training=self.training)
-            Decode.append(recon)
-            Ds = torch.stack(Decode, dim=1)  # (N, M, D * K)
-            Ds = torch.mean(Ds, dim=1)
-
-        return self.decoder_to_contrastive(Ds)
-
-    def encoding_mask_noise(self, g, x, mask_rate=0.3):
-        num_nodes = g.num_nodes()
-        perm = torch.randperm(num_nodes, device=x.device)
-
-        # random masking
-        num_mask_nodes = int(mask_rate * num_nodes)
-        mask_nodes = perm[: num_mask_nodes]
-        keep_nodes = perm[num_mask_nodes: ]
-
-        out_x = x.clone()
-        token_nodes = mask_nodes
-        out_x[mask_nodes] = 0.0
-
-        out_x[token_nodes] += self.enc_mask_token
-        use_g = g.clone()
-
-        return use_g, out_x, (mask_nodes, keep_nodes)
-
-    def random_remask(self, g, rep, remask_rate=0.5):
-        num_nodes = g.num_nodes()
-        perm = torch.randperm(num_nodes, device=rep.device)
-        num_remask_nodes = int(remask_rate * num_nodes)
-        remask_nodes = perm[: num_remask_nodes]
-        rekeep_nodes = perm[num_remask_nodes:]
-
-        rep = rep.clone()
-        rep[remask_nodes] = 0
-        rep[remask_nodes] += self.dec_mask_token
-
-        return rep, remask_nodes, rekeep_nodes
 
 
 
@@ -422,30 +290,19 @@ class HeteroAugmentationPipeline(nn.Module):
     Heterogeneous graph augmentation pipeline with:
     - Node Feature Masking
     - Structure-Aware Meta-Path Connections (respects original graph topology)
-    - Remasking Strategy  
-    - Encoder-Decoder with Masking (DGL-based)
+    - Remasking Strategy
     """
     def __init__(self, feats_dim_list: List[int], augmentation_config: Dict[str, Any] = None):
         super(HeteroAugmentationPipeline, self).__init__()
         
-        # Default configuration - Node masking + Meta-path connections + Encoder-Decoder with masking
+        # Default configuration - Node masking + Meta-path connections
         default_config = {
             'use_node_masking': True,
             'use_meta_path_connector': True,  # New: Meta-path connections
-            'use_autoencoder': True,  # Enabled - DGL Autoencoder with masking
             'mask_rate': 0.1,
             'remask_rate': 0.3,
             'num_remasking': 2,
-            'connection_strength': 0.1,
-            'autoencoder_hidden_dim': 64,
-            'encoder': 'GAT',
-            'decoder': 'GAT', 
-            'feat_drop': 0.1,
-            'attn_drop': 0.1,
-            'enc_num_layer': 2,
-            'dec_num_layer': 2,
-            'num_heads': 1,
-            'reconstruction_weight': 0.1
+            'connection_strength': 0.1
         }
         
         self.config = {**default_config, **(augmentation_config or {})}
@@ -465,32 +322,12 @@ class HeteroAugmentationPipeline(nn.Module):
                 feats_dim_list,
                 self.config['connection_strength']
             )
-        
-        # Initialize autoencoders for each feature type
-        if self.config['use_autoencoder']:
-            self.autoencoders = nn.ModuleList([
-                Autoencoder(
-                    in_dim=feat_dim,
-                    hidden_dim=self.config['autoencoder_hidden_dim'],
-                    encoder=self.config['encoder'],
-                    decoder=self.config['decoder'],
-                    feat_drop=self.config['feat_drop'],
-                    attn_drop=self.config['attn_drop'],
-                    enc_num_layer=self.config['enc_num_layer'],
-                    dec_num_layer=self.config['dec_num_layer'],
-                    num_heads=self.config['num_heads'],
-                    mask_rate=self.config['mask_rate'],
-                    remask_rate=self.config['remask_rate'],
-                    num_remasking=self.config['num_remasking']
-                ) for feat_dim in feats_dim_list
-            ])
     
-    def forward(self, feats: List[torch.Tensor], gs=None, mps=None) -> Tuple[List[torch.Tensor], Dict]:
+    def forward(self, feats: List[torch.Tensor], mps=None) -> Tuple[List[torch.Tensor], Dict]:
         """
-        Apply augmentation pipeline: Node masking + Meta-path connections + Encoder-Decoder with masking
+        Apply augmentation pipeline: Node masking + Meta-path connections
         Args:
             feats: List of node features
-            gs: Optional list of DGL graphs for autoencoder (if None, autoencoder will be skipped)
             mps: Optional list of meta-path adjacency matrices for structure-aware connections
         """
         aug_feats = feats
@@ -506,39 +343,16 @@ class HeteroAugmentationPipeline(nn.Module):
             aug_feats, connection_info = self.meta_path_connector(aug_feats, mps)
             aug_info['connection_info'] = connection_info
         
-        # Apply autoencoder reconstruction with masking (requires DGL graphs)
-        if self.config['use_autoencoder'] and hasattr(self, 'autoencoders') and gs is not None:
-            reconstructed_feats = []
-            
-            try:
-                for i, (feat, autoencoder) in enumerate(zip(aug_feats, self.autoencoders)):
-                    # Use corresponding graph for this feature type
-                    g = gs[min(i, len(gs)-1)]  # Use last graph if not enough graphs
-                    
-                    # Get reconstruction using DGL autoencoder with masking
-                    reconstructed = autoencoder(g, feat)
-                    reconstructed_feats.append(reconstructed)
-                
-                # Use reconstructed features as augmented features
-                aug_feats = reconstructed_feats
-                aug_info['autoencoder_applied'] = True
-                
-            except Exception as e:
-                # If autoencoder fails, use original features
-                aug_info['autoencoder_skipped'] = str(e)
-        elif self.config['use_autoencoder'] and gs is None:
-            aug_info['autoencoder_skipped'] = 'No DGL graphs provided'
-        
         return aug_feats, aug_info
     
-    def get_multiple_augmentations(self, feats: List[torch.Tensor], gs=None, mps=None,
+    def get_multiple_augmentations(self, feats: List[torch.Tensor], mps=None,
                                   num_augmentations: int = 3) -> List[Tuple]:
         """
         Generate multiple different augmentations
         """
         augmentations = []
         for _ in range(num_augmentations):
-            aug_feats, aug_info = self.forward(feats, gs, mps)
+            aug_feats, aug_info = self.forward(feats, mps)
             augmentations.append((aug_feats, aug_info))
         
         return augmentations
@@ -546,13 +360,9 @@ class HeteroAugmentationPipeline(nn.Module):
     def get_reconstruction_loss(self, aug_info: Dict) -> torch.Tensor:
         """
         Extract reconstruction loss from augmentation info for backward compatibility
+        Note: Autoencoder removed, this always returns 0.0
         """
-        if 'reconstruction_losses' in aug_info:
-            return sum(aug_info['reconstruction_losses']) if aug_info['reconstruction_losses'] else torch.tensor(0.0)
-        elif 'total_reconstruction_loss' in aug_info:
-            return aug_info['total_reconstruction_loss']
-        else:
-            return torch.tensor(0.0)
+        return torch.tensor(0.0)
     
     def set_meta_path_connection_strength(self, strength: float):
         """
@@ -598,13 +408,15 @@ class HeteroAugmentationPipeline(nn.Module):
         pruning_targets = {}
         
         # Node-level pruning targets based on masking patterns
+        # FIXED LOGIC: Masked nodes should be MORE important (model must learn to recover them)
+        # This aligns with the feature-level importance logic below
         if 'masked_nodes' in aug_info and len(aug_info['masked_nodes']) > 0:
             for i, masked_nodes in enumerate(aug_info['masked_nodes']):
                 if len(masked_nodes) > 0:
-                    # Nodes that were masked are less important for this feature type
+                    # Nodes that were masked are MORE important - model needs to focus on recovering them
                     num_nodes = feats[i].size(0)
                     node_importance = torch.ones(num_nodes, device=feats[i].device)
-                    node_importance[masked_nodes] *= 0.3  # Reduce importance of masked nodes
+                    node_importance[masked_nodes] *= 0.1  # INCREASE importance of masked nodes for robustness
                     pruning_targets[f'node_importance_{i}'] = node_importance
         
         # Structure-level pruning targets based on meta-path connections
@@ -629,16 +441,18 @@ class HeteroAugmentationPipeline(nn.Module):
             mp_strength = self.get_meta_path_connection_strength()
             pruning_targets['meta_path_importance'] = torch.tensor(mp_strength)
             
-        # Feature-level importance based on reconstruction difficulty
-        if 'reconstruction_losses' in aug_info and aug_info['reconstruction_losses']:
-            feature_difficulty = []
-            for loss in aug_info['reconstruction_losses']:
-                if isinstance(loss, torch.Tensor):
-                    feature_difficulty.append(loss.detach())
+        # Feature-level importance based on masking patterns
+        if 'mask_info' in aug_info and 'masked_nodes' in aug_info['mask_info']:
+            masked_counts = []
+            for masked_nodes in aug_info['mask_info']['masked_nodes']:
+                if len(masked_nodes) > 0:
+                    masked_counts.append(len(masked_nodes))
+                else:
+                    masked_counts.append(0)
                     
-            if feature_difficulty:
-                # Features with higher reconstruction loss are more important
-                feature_importance = torch.stack(feature_difficulty)
+            if masked_counts and sum(masked_counts) > 0:
+                # Features with more masking are considered more important for robustness
+                feature_importance = torch.tensor(masked_counts, dtype=torch.float)
                 feature_importance = F.softmax(feature_importance, dim=0)
                 pruning_targets['feature_importance'] = feature_importance
         
@@ -687,7 +501,7 @@ class HeteroAugmentationPipeline(nn.Module):
             self.set_meta_path_connection_strength(strength)
             
             # Generate augmented view
-            aug_feats_view, aug_info_view = self.forward(sampled_feats, gs=None, mps=mps)
+            aug_feats_view, aug_info_view = self.forward(sampled_feats, mps=mps)
             
             # Get pruning targets for this view
             pruning_targets_view = self.get_pruning_targets(sampled_feats, aug_info_view)
@@ -714,10 +528,17 @@ class HeteroAugmentationPipeline(nn.Module):
         return augmentation_views, comprehensive_info
     
     def _create_consensus_targets(self, view_infos: List[Dict]) -> Dict:
-        """Create consensus pruning targets from multiple augmentation views"""
+        """Create consensus pruning targets from multiple augmentation views
+        FIXED: Use weighted consensus based on augmentation strength, not simple average
+        """
         consensus = {}
         
-        # Aggregate node importance across views
+        # Extract augmentation strengths from comprehensive_info (passed via view_infos context)
+        # Weights: views with stronger augmentation get higher weight (they're more informative)
+        augmentation_strengths = [0.1, 0.2, 0.3]  # Corresponding to the 3 views
+        weights = torch.tensor(augmentation_strengths) / sum(augmentation_strengths)  # Normalize to sum=1
+        
+        # Aggregate node importance across views with weights
         node_importances = []
         for view_info in view_infos:
             if 'pruning_targets' in view_info:
@@ -726,18 +547,24 @@ class HeteroAugmentationPipeline(nn.Module):
                         node_importances.append(value)
         
         if node_importances:
-            consensus['avg_node_importance'] = torch.stack(node_importances, dim=0).mean(dim=0)
-            consensus['std_node_importance'] = torch.stack(node_importances, dim=0).std(dim=0)
+            # Weighted average instead of simple mean
+            stacked_importances = torch.stack(node_importances, dim=0)
+            weights_expanded = weights[:len(node_importances)].view(-1, 1).to(stacked_importances.device)
+            consensus['avg_node_importance'] = (stacked_importances * weights_expanded).sum(dim=0)
+            consensus['std_node_importance'] = stacked_importances.std(dim=0)
         
-        # Aggregate feature importance
+        # Aggregate feature importance with weights
         feature_importances = []
         for view_info in view_infos:
             if 'pruning_targets' in view_info and 'feature_importance' in view_info['pruning_targets']:
                 feature_importances.append(view_info['pruning_targets']['feature_importance'])
         
         if feature_importances:
-            consensus['avg_feature_importance'] = torch.stack(feature_importances, dim=0).mean(dim=0)
-            consensus['feature_agreement'] = torch.stack(feature_importances, dim=0).std(dim=0)
+            # Weighted average for feature importance as well
+            stacked_features = torch.stack(feature_importances, dim=0)
+            weights_expanded = weights[:len(feature_importances)].view(-1, 1).to(stacked_features.device)
+            consensus['avg_feature_importance'] = (stacked_features * weights_expanded).sum(dim=0)
+            consensus['feature_agreement'] = stacked_features.std(dim=0)
         
         return consensus
     

@@ -39,10 +39,6 @@ class TeacherTrainer:
                 args.type_num = [3492, 2502, 33401, 4459]  # [movie, director, actor, writer]
                 args.nei_num = 3
 
-        # Set default ratio if not provided
-        if not hasattr(args, 'ratio'):
-            args.ratio = ["80_10_10"]
-
         self.nei_index, self.feats, self.mps, self.pos, self.label, self.idx_train, self.idx_val, self.idx_test = load_data(args.dataset, args.ratio, args.type_num)
         
         # Dataset specific parameters
@@ -241,7 +237,6 @@ class TeacherTrainer:
 def main():
     # Parse arguments
     args = kd_params()
-    args.train_teacher = True
     
     # Set random seeds
     torch.manual_seed(args.seed)
