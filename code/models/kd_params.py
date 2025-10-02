@@ -102,6 +102,19 @@ def kd_params():
     parser.add_argument('--link_sample_rate', type=int, default=2000, help="Number of edges to sample for link prediction")
     parser.add_argument('--relational_sample_nodes', type=int, default=512, help="Number of nodes to sample for relational KD")
     
+    # Multi-scale Link Prediction Enhancement
+    parser.add_argument('--use_multihop_link_loss', action='store_true', default=True, help="Use multi-hop link prediction loss")
+    parser.add_argument('--multihop_weight', type=float, default=0.3, help="Weight for multi-hop link loss")
+    parser.add_argument('--max_hops', type=int, default=3, help="Maximum number of hops for multi-hop loss")
+    parser.add_argument('--use_metapath_specific_loss', action='store_true', default=True, help="Use meta-path specific link loss")
+    parser.add_argument('--metapath_specific_weight', type=float, default=0.25, help="Weight for meta-path specific loss")
+    
+    # Structural Knowledge Transfer
+    parser.add_argument('--use_structural_distance', action='store_true', default=True, help="Use structural distance preservation")
+    parser.add_argument('--structural_distance_weight', type=float, default=0.2, help="Weight for structural distance loss")
+    parser.add_argument('--use_attention_transfer', action='store_true', default=True, help="Use attention transfer loss")
+    parser.add_argument('--attention_transfer_weight', type=float, default=0.15, help="Weight for attention transfer")
+    
     # Logging and evaluation
     parser.add_argument('--log_interval', type=int, default=10, help="Logging interval")
     parser.add_argument('--eval_interval', type=int, default=100, help="Evaluation interval")

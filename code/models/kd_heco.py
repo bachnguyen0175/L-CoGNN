@@ -921,6 +921,159 @@ def sample_negative_edges(num_nodes, num_samples, existing_edges=None):
     return torch.tensor(neg_edges, dtype=torch.long)
 
 
+def multi_hop_link_prediction_loss(embeddings, mps, num_samples=1000, max_hops=3, temperature=1.0):
+    """
+    Multi-hop link prediction loss
+    
+    Captures relationships at different distances:
+    - 1-hop: Direct connections
+    - 2-hop: Second-degree connections  
+    - 3-hop: Third-degree connections
+    
+    This helps the student model understand both local and global graph structure,
+    significantly improving link prediction performance.
+    """
+    total_loss = 0.0
+    num_valid_hops = 0
+    
+    for hop in range(1, min(max_hops + 1, 4)):  # Limit to 3 hops for efficiency
+        hop_edges = []
+        
+        for mp in mps:
+            if not isinstance(mp, torch.Tensor):
+                continue
+            
+            try:
+                # Get k-hop adjacency
+                mp_dense = mp.to_dense() if mp.is_sparse else mp
+                mp_k_hop = mp_dense.clone()
+                
+                # Compute A^k (k-hop adjacency)
+                for _ in range(hop - 1):
+                    mp_k_hop = torch.mm(mp_k_hop, mp_dense)
+                    # Binarize to avoid overflow
+                    mp_k_hop = (mp_k_hop > 0).float()
+                
+                # Sample edges from k-hop adjacency
+                if mp_k_hop.sum() > 0:
+                    nonzero = mp_k_hop.nonzero(as_tuple=False)
+                    if len(nonzero) > 0:
+                        num_sample = min(num_samples // (len(mps) * max_hops), len(nonzero))
+                        if num_sample > 0:
+                            indices = torch.randperm(len(nonzero))[:num_sample]
+                            hop_edges.append(nonzero[indices])
+            except:
+                continue
+        
+        if hop_edges:
+            hop_edges = torch.cat(hop_edges, dim=0)[:num_samples]
+            
+            # Sample negative edges
+            neg_edges = sample_negative_edges(embeddings.size(0), len(hop_edges), hop_edges)
+            neg_edges = neg_edges.to(embeddings.device)
+            
+            # Compute loss for this hop level (weight by inverse distance)
+            hop_loss = link_reconstruction_loss(embeddings, hop_edges, neg_edges, temperature)
+            hop_weight = 1.0 / hop  # Closer hops weighted more
+            total_loss += hop_weight * hop_loss
+            num_valid_hops += 1
+    
+    return total_loss / max(num_valid_hops, 1)
+
+
+def metapath_specific_link_loss(embeddings, mps, num_samples_per_path=500, temperature=1.0):
+    """
+    Meta-path specific link prediction
+    
+    Different meta-paths capture different semantic relationships: (examples on ACM)
+    - PAP (Paper-Author-Paper): Co-authorship patterns
+    - PSP (Paper-Subject-Paper): Topical similarity
+    
+    Learning path-specific patterns improves link prediction accuracy.
+    """
+    total_loss = 0.0
+    num_valid_paths = 0
+    
+    for mp in mps:
+        if not isinstance(mp, torch.Tensor):
+            continue
+        
+        try:
+            # Sample edges from this specific meta-path
+            pos_edges = sample_edges_from_metapaths([mp], num_samples_per_path)
+            
+            if pos_edges is None or len(pos_edges) == 0:
+                continue
+            
+            pos_edges = pos_edges.to(embeddings.device)
+            
+            # Sample negative edges
+            neg_edges = sample_negative_edges(embeddings.size(0), len(pos_edges), pos_edges)
+            neg_edges = neg_edges.to(embeddings.device)
+            
+            # Path-specific loss
+            path_loss = link_reconstruction_loss(embeddings, pos_edges, neg_edges, temperature)
+            total_loss += path_loss
+            num_valid_paths += 1
+        except:
+            continue
+    
+    return total_loss / max(num_valid_paths, 1)
+
+
+def structural_distance_preservation_loss(teacher_embeds, student_embeds, sampled_nodes=None, temperature=1.5):
+    """
+    Structural distance preservation
+    
+    Preserves not just similarity, but also dissimilarity structure.
+    Nodes that are far apart in teacher space should also be far in student space.
+    
+    This helps maintain the global topology of the embedding space.
+    """
+    if sampled_nodes is None:
+        num_nodes = min(teacher_embeds.size(0), 256)
+        sampled_nodes = torch.randperm(teacher_embeds.size(0))[:num_nodes]
+    
+    if len(sampled_nodes) < 2:
+        return torch.tensor(0.0, device=teacher_embeds.device)
+    
+    # Sample embeddings
+    teacher_samp = teacher_embeds[sampled_nodes]
+    student_samp = student_embeds[sampled_nodes]
+    
+    # Normalize
+    teacher_samp = F.normalize(teacher_samp, p=2, dim=-1)
+    student_samp = F.normalize(student_samp, p=2, dim=-1)
+    
+    # Compute distance matrices (1 - cosine similarity = distance)
+    teacher_dist = 1.0 - torch.mm(teacher_samp, teacher_samp.t())
+    student_dist = 1.0 - torch.mm(student_samp, student_samp.t())
+    
+    # MSE on distance matrices
+    dist_loss = F.mse_loss(student_dist / temperature, teacher_dist / temperature)
+    
+    return dist_loss
+
+
+def attention_transfer_loss(teacher_embeds, student_embeds, power=2):
+    """
+    Attention Transfer
+    
+    Transfer attention maps from teacher to student.
+    Attention maps highlight important features/relationships.
+    
+    Based on "Paying More Attention to Attention" (ICLR 2017)
+    """
+    # Compute attention maps (normalized L2 norm across feature dimension)
+    def attention_map(x, p=2):
+        return F.normalize(x.pow(p).mean(1).view(x.size(0), -1), p=2, dim=1)
+    
+    teacher_att = attention_map(teacher_embeds, power)
+    student_att = attention_map(student_embeds, power)
+    
+    # MSE on attention maps
+    return F.mse_loss(student_att, teacher_att)
+
 class DualTeacherKD(nn.Module):
     """
     Dual-Teacher Knowledge Distillation Framework
@@ -1166,262 +1319,6 @@ class DualTeacherKD(nn.Module):
             conflict_penalty = (1.0 - avg_similarity) / 2.0
             
             return conflict_penalty.item()
-
-    def calc_distillation_loss(self, feats, mps, nei_index, pos, num_classes,
-                              nodes=None, distill_config=None):
-        """
-        Calculate knowledge distillation loss with enhanced LightGNN techniques
-        
-        Args:
-            feats: Node features
-            mps: Meta-paths
-            nei_index: Neighbor indices
-            pos: Positive pairs
-            nodes: Nodes for contrastive learning
-            distill_config: Distillation configuration dict
-        """
-        # Get appropriate teacher-student pair
-        teacher, student = self.get_teacher_student_pair()
-        
-        # If no valid teacher-student pair, return zero loss
-        if teacher is None or student is None:
-            return torch.tensor(0.0, device=feats[0].device), {
-                'distill_loss': torch.tensor(0.0, device=feats[0].device),
-                'total_loss': torch.tensor(0.0, device=feats[0].device)
-            }
-        
-        if distill_config is None:
-            distill_config = get_distillation_config(kd_params())
-        
-        # Build detached copy of mps for teacher to prevent autograd graph bloat
-        with torch.no_grad():
-            # Create single detached copy for memory efficiency
-            mps_detached = []
-            for mp in mps:
-                if hasattr(mp, 'is_sparse') and mp.is_sparse:
-                    if not mp.is_coalesced():
-                        mp = mp.coalesce()
-                    mps_detached.append(mp.detach())
-                else:
-                    mps_detached.append(mp.detach())
-
-        # Determine which alignment strategy to use based on model types
-        teacher_type = type(teacher).__name__
-        student_type = type(student).__name__
-
-        # Compute teacher representations (detached) and student with gradients
-        if hasattr(student, 'get_teacher_aligned_representations'):
-            teacher_mp, teacher_sc = teacher.get_representations(feats, mps_detached, nei_index)
-            student_mp, student_sc = student.get_teacher_aligned_representations(feats, mps_detached, nei_index)
-        else:
-            teacher_mp, teacher_sc = teacher.get_representations(feats, mps_detached, nei_index)
-            student_mp, student_sc = student.get_representations(feats, mps_detached, nei_index)
-        
-        total_distill_loss = 0
-        losses = {}
-        
-        # Embedding-level knowledge distillation
-        if distill_config['use_embedding_kd'] and nodes is not None:
-            mp_embed_loss = infoNCE(teacher_mp, student_mp, nodes, distill_config['embedding_temp'])
-            sc_embed_loss = infoNCE(teacher_sc, student_sc, nodes, distill_config['embedding_temp'])
-            embed_distill_loss = (mp_embed_loss + sc_embed_loss) / 2
-            total_distill_loss += distill_config['embedding_weight'] * embed_distill_loss
-            losses['embedding_distill'] = embed_distill_loss
-        
-        # Self-contrast loss
-        if distill_config['use_self_contrast'] and nodes is not None:
-            unique_nodes = torch.unique(nodes)
-            self_contrast = self_contrast_loss(
-                student_mp, student_sc, unique_nodes, 
-                temperature=distill_config['self_contrast_temp'],
-                weight=distill_config['self_contrast_weight']
-            )
-            total_distill_loss += self_contrast
-            losses['self_contrast'] = self_contrast
-        
-        # Subspace contrastive loss with real masks
-        if distill_config['use_subspace_contrast'] and nodes is not None:
-            # Get actual masks from student model if available
-            if hasattr(student, 'get_masks'):
-                mp_masks, sc_masks = student.get_masks()
-            else:
-                # Fallback to dummy masks
-                mp_masks = torch.ones_like(student_mp)
-                sc_masks = torch.ones_like(student_sc)
-
-            subspace_loss = subspace_contrastive_loss_hetero(
-                student_mp, student_sc, mp_masks, sc_masks,
-                torch.unique(nodes),
-                temperature=distill_config.get('subspace_temp', 1.0),
-                weight=distill_config['subspace_weight'],
-                pruning_run=distill_config.get('pruning_run', 0),
-                use_loosening=True  # Enable adaptive loosening
-            )
-            total_distill_loss += subspace_loss
-            losses['subspace_contrast'] = subspace_loss
-        
-        # Multi-level distillation from teacher layers (NEW)
-        if distill_config['use_multi_level_kd'] and nodes is not None and hasattr(teacher, 'get_multi_order_representations'):
-            with torch.no_grad():
-                # Reuse the same detached mps for memory efficiency
-                teacher_multi_representations = teacher.get_multi_order_representations(feats, mps_detached, nei_index)
-
-            # Use high-order representations (layers 2+) for distillation
-            if len(teacher_multi_representations) > 2:
-                # Combine high-order representations
-                high_order_teacher = sum(teacher_multi_representations[2:]) / len(teacher_multi_representations[2:])
-
-                # Student combined representation
-                student_combined = (student_mp + student_sc) / 2
-
-                # Multi-level distillation loss
-                multi_level_loss = infoNCE(high_order_teacher, student_combined, nodes, distill_config['embedding_temp'])
-                total_distill_loss += distill_config['multi_level_weight'] * multi_level_loss
-                losses['multi_level_distill'] = multi_level_loss
-
-        # Prediction-level knowledge distillation
-        if distill_config['use_prediction_kd']:
-            prediction_losses = []
-
-            # 1. Soft Target Distillation for Node Classification
-            # Generate predictions using a classifier on top of embeddings
-            if hasattr(teacher, 'get_embeds') and hasattr(student, 'get_embeds'):
-                with torch.no_grad():
-                    teacher_embeds = teacher.get_embeds(feats, mps_detached)
-                student_embeds = student.get_embeds(feats, mps_detached)
-
-                # Create separate classifiers for teacher and student
-                teacher_embed_dim = teacher_embeds.shape[1]
-                student_embed_dim = student_embeds.shape[1]
-
-                # Teacher classifier
-                if not hasattr(self, 'teacher_prediction_classifier'):
-                    self.teacher_prediction_classifier = nn.Sequential(
-                        nn.Linear(teacher_embed_dim, teacher_embed_dim // 2),
-                        nn.ReLU(),
-                        nn.Linear(teacher_embed_dim // 2, num_classes)  # Adjust num_classes as needed
-                    ).to(teacher_embeds.device)
-
-                # Student classifier
-                if not hasattr(self, 'student_prediction_classifier'):
-                    self.student_prediction_classifier = nn.Sequential(
-                        nn.Linear(student_embed_dim, student_embed_dim // 2),
-                        nn.ReLU(),
-                        nn.Linear(student_embed_dim // 2, num_classes)  # Adjust num_classes as needed
-                    ).to(student_embeds.device)
-
-                # Get teacher predictions (soft targets)
-                with torch.no_grad():
-                    teacher_logits = self.teacher_prediction_classifier(teacher_embeds)
-                    teacher_soft_targets = F.softmax(teacher_logits / distill_config['prediction_temp'], dim=-1)
-
-                # Get student predictions
-                student_logits = self.student_prediction_classifier(student_embeds)
-                student_log_probs = F.log_softmax(student_logits / distill_config['prediction_temp'], dim=-1)
-
-                # KL Divergence loss for soft target distillation
-                kl_loss = F.kl_div(student_log_probs, teacher_soft_targets, reduction='batchmean')
-                kl_loss *= (distill_config['prediction_temp'] ** 2)  # Temperature scaling
-                prediction_losses.append(kl_loss)
-
-            # 2. Contrastive Prediction Distillation
-            # Match prediction similarities between teacher and student
-            if nodes is not None and len(nodes) > 1:
-                # Sample node pairs for contrastive prediction
-                num_pairs = min(512, len(nodes))  # Limit for efficiency
-                sampled_nodes = nodes[:num_pairs] if len(nodes) >= num_pairs else nodes
-
-                # Get teacher and student embeddings for sampled nodes
-                with torch.no_grad():
-                    teacher_sampled = teacher_embeds[sampled_nodes]
-                student_sampled = student_embeds[sampled_nodes]
-
-                # Compute pairwise prediction similarities
-                teacher_pred_sim = torch.mm(teacher_sampled, teacher_sampled.t())
-                student_pred_sim = torch.mm(student_sampled, student_sampled.t())
-
-                # MSE loss on prediction similarity matrices
-                pred_sim_loss = F.mse_loss(student_pred_sim, teacher_pred_sim)
-                prediction_losses.append(pred_sim_loss)
-
-            # 3. Link Prediction Knowledge Distillation
-            if pos is not None and hasattr(pos, 'indices'):
-                try:
-                    # Get edge indices from pos tensor
-                    if hasattr(pos, 'coalesce'):
-                        pos_coalesced = pos.coalesce()
-                        edge_indices = pos_coalesced.indices()  # [2, num_edges]
-                    else:
-                        edge_indices = torch.nonzero(pos, as_tuple=False).t()
-
-                    if edge_indices.shape[1] > 0:
-                        # Sample edges for link prediction KD
-                        num_edges = min(256, edge_indices.shape[1])
-                        sampled_edge_indices = torch.randperm(edge_indices.shape[1])[:num_edges]
-                        sampled_edges = edge_indices[:, sampled_edge_indices]  # [2, num_sampled]
-
-                        # Get node embeddings
-                        with torch.no_grad():
-                            teacher_embeds_all = teacher.get_embeds(feats, mps_detached)
-                        student_embeds_all = student.get_embeds(feats, mps_detached)
-
-                        # Compute edge predictions (dot product)
-                        teacher_src = teacher_embeds_all[sampled_edges[0]]
-                        teacher_dst = teacher_embeds_all[sampled_edges[1]]
-                        teacher_edge_preds = (teacher_src * teacher_dst).sum(dim=-1)
-
-                        student_src = student_embeds_all[sampled_edges[0]]
-                        student_dst = student_embeds_all[sampled_edges[1]]
-                        student_edge_preds = (student_src * student_dst).sum(dim=-1)
-
-                        # Soft target distillation for link predictions
-                        teacher_edge_soft = torch.sigmoid(teacher_edge_preds / distill_config['prediction_temp'])
-                        student_edge_logits = student_edge_preds / distill_config['prediction_temp']
-
-                        # Binary cross entropy loss for link prediction KD
-                        link_pred_loss = F.binary_cross_entropy_with_logits(
-                            student_edge_logits, teacher_edge_soft
-                        )
-                        prediction_losses.append(link_pred_loss)
-
-                except Exception as e:
-                    # If link prediction KD fails, continue without it
-                    print(f"Warning: Link prediction KD failed: {e}")
-
-            # Combine all prediction losses
-            if prediction_losses:
-                total_pred_loss = sum(prediction_losses) / len(prediction_losses)
-                total_distill_loss += distill_config['prediction_weight'] * total_pred_loss
-                losses['prediction_distill'] = total_pred_loss
-            else:
-                losses['prediction_distill'] = torch.tensor(0.0, device=teacher_mp.device)
-        
-        total_loss = total_distill_loss
-        losses['total_loss'] = total_loss
-        losses['distill_loss'] = total_distill_loss
-        
-        return total_loss, losses
-
-
-def create_teacher_student_models(hidden_dim, feats_dim_list, feat_drop, attn_drop, 
-                                 P, sample_rate, nei_num, tau, lam, compression_ratio=0.5):
-    """
-    Create teacher and student models (legacy function)
-    
-    Returns:
-        teacher: Full-size teacher model
-        student: Compressed student model
-        kd_model: Knowledge distillation framework
-    """
-    teacher = MyHeCo(hidden_dim, feats_dim_list, feat_drop, attn_drop, 
-                     P, sample_rate, nei_num, tau, lam)
-    
-    student = StudentMyHeCo(hidden_dim, feats_dim_list, feat_drop, attn_drop, 
-                           P, sample_rate, nei_num, tau, lam, compression_ratio)
-    
-    kd_model = DualTeacherKD(teacher=teacher, student=student)
-    
-    return teacher, student, kd_model
 
 
 def count_parameters(model):

@@ -316,23 +316,6 @@ class ComprehensiveEvaluator:
             print("   ⚠ Skipped (no edges available)")
             model_results['link_prediction'] = {'skipped': 'no edges available'}
 
-        # 3. Node Clustering
-        print("\n3. Node Clustering...")
-        try:
-            clustering_results = evaluate_node_clustering(
-                embeddings, self.label, self.nb_classes, self.device
-            )
-
-            model_results['node_clustering'] = clustering_results
-
-            print(f"   ✓ NMI: {clustering_results['nmi']:.4f} ± {clustering_results['nmi_std']:.4f}")
-            print(f"   ✓ ARI: {clustering_results['ari']:.4f} ± {clustering_results['ari_std']:.4f}")
-            print(f"   ✓ Accuracy: {clustering_results['accuracy']:.4f} ± {clustering_results['accuracy_std']:.4f}")
-            print(f"   ✓ Modularity: {clustering_results['modularity']:.4f}")
-
-        except Exception as e:
-            print(f"   ✗ Failed: {e}")
-            model_results['node_clustering'] = {'error': str(e)}
 
         return model_results
 
@@ -347,8 +330,16 @@ class ComprehensiveEvaluator:
             'task_comparisons': {}
         }
 
-        # Compare each task
-        for task in ['node_classification', 'link_prediction', 'node_clustering']:
+        # Store forgetting rates for AF calculation
+        # Focus on primary tasks: node_classification (50%) and link_prediction (50%)
+        forgetting_rates = []
+        task_weights = {
+            'node_classification': 0.5,
+            'link_prediction': 0.5
+        }
+
+        # Compare each task (node clustering removed - not primary for graph KD)
+        for task in ['node_classification', 'link_prediction']:
             if task in teacher_results and task in student_results:
                 if 'error' not in teacher_results[task] and 'error' not in student_results[task]:
                     task_comparison = {}
@@ -356,31 +347,78 @@ class ComprehensiveEvaluator:
                     if task == 'node_classification':
                         for metric in ['accuracy', 'macro_f1', 'micro_f1']:
                             if metric in teacher_results[task] and metric in student_results[task]:
-                                retention = student_results[task][metric] / teacher_results[task][metric]
+                                teacher_val = teacher_results[task][metric]
+                                student_val = student_results[task][metric]
+                                retention = student_val / teacher_val
                                 task_comparison[f'{metric}_retention'] = retention
+                                
+                                # Calculate forgetting: max(0, teacher - student) / teacher
+                                # Higher forgetting = worse distillation
+                                forgetting = max(0, teacher_val - student_val) / teacher_val
+                                task_comparison[f'{metric}_forgetting'] = forgetting
+                                forgetting_rates.append((forgetting, task_weights[task]))
 
                     elif task == 'link_prediction':
                         for metric in ['auc', 'ap']:
                             if metric in teacher_results[task] and metric in student_results[task]:
-                                retention = student_results[task][metric] / teacher_results[task][metric]
+                                teacher_val = teacher_results[task][metric]
+                                student_val = student_results[task][metric]
+                                retention = student_val / teacher_val
                                 task_comparison[f'{metric}_retention'] = retention
-
-                    elif task == 'node_clustering':
-                        for metric in ['nmi', 'ari', 'accuracy']:
-                            if metric in teacher_results[task] and metric in student_results[task]:
-                                retention = student_results[task][metric] / teacher_results[task][metric]
-                                task_comparison[f'{metric}_retention'] = retention
+                                
+                                # Calculate forgetting
+                                forgetting = max(0, teacher_val - student_val) / teacher_val
+                                task_comparison[f'{metric}_forgetting'] = forgetting
+                                forgetting_rates.append((forgetting, task_weights[task]))
 
                     comparison['task_comparisons'][task] = task_comparison
 
+        # Calculate Weighted Average Forget (AF) - Lower is better!
+        # Focus on primary tasks: 50% node classification + 50% link prediction
+        # (Node clustering removed as it's not a primary metric for graph KD)
+        if forgetting_rates:
+            # Compute weighted average
+            total_forgetting = sum(forgetting * weight for forgetting, weight in forgetting_rates)
+            total_weight = sum(weight for _, weight in forgetting_rates)
+            average_forget = total_forgetting / total_weight if total_weight > 0 else 0
+            
+            comparison['average_forget'] = average_forget
+            comparison['average_forget_percentage'] = average_forget * 100
+            comparison['weighting_scheme'] = 'node_classification: 50%, link_prediction: 50%'
+            
+            # Categorize distillation quality based on AF
+            if average_forget < 0.01:  # < 1% average forgetting
+                quality = "Excellent ✨"
+            elif average_forget < 0.03:  # 1-3% forgetting
+                quality = "Very Good ✅"
+            elif average_forget < 0.05:  # 3-5% forgetting
+                quality = "Good ✓"
+            elif average_forget < 0.10:  # 5-10% forgetting
+                quality = "Fair ⚠️"
+            else:  # > 10% forgetting
+                quality = "Needs Improvement ⚠️⚠️"
+            
+            comparison['distillation_quality'] = quality
+        else:
+            comparison['average_forget'] = None
+            comparison['distillation_quality'] = "Unknown"
+
         # Print comparison summary
         print(f"\n📊 PARAMETER REDUCTION: {comparison['parameter_reduction']*100:.1f}%")
-        print(f"📈 PERFORMANCE RETENTION:")
+        
+        if comparison['average_forget'] is not None:
+            print(f"📉 WEIGHTED AVERAGE FORGET (AF): {comparison['average_forget']:.4f} ({comparison['average_forget_percentage']:.2f}%)")
+            print(f"🎯 DISTILLATION QUALITY: {comparison['distillation_quality']}")
+            print(f"   Weighting: {comparison['weighting_scheme']}")
+            print(f"   (Lower AF = Better distillation, focus on primary tasks)")
+        
+        print(f"\n📈 PERFORMANCE RETENTION:")
 
         for task, task_comp in comparison['task_comparisons'].items():
             print(f"\n   {task.replace('_', ' ').title()}:")
-            for metric, retention in task_comp.items():
-                print(f"      {metric}: {retention*100:.1f}%")
+            for metric, value in task_comp.items():
+                if 'retention' in metric:
+                    print(f"      {metric}: {value*100:.1f}%")
 
         return comparison
 

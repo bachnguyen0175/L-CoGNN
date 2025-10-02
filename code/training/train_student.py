@@ -205,7 +205,6 @@ class StudentTrainer:
         print(f"Student model: {student_params:,} parameters")
         print(f"Student compression ratio: {self.args.student_compression_ratio:.2f}")
         
-        # FIX 2.7 & 2.8: Updated terminology - it's augmentation expert, not pruning expert
         # Print dual-teacher mode info
         if self.teacher and self.middle_teacher:
             print("🚀 Dual-Teacher Mode: Main teacher (knowledge distillation) + Augmentation expert (robustness)")
@@ -246,24 +245,11 @@ class StudentTrainer:
         # Get contrastive nodes for this batch
         contrastive_nodes = self.get_contrastive_nodes(batch_size=self.args.batch_size)
         
-        # FIX 2.1: Refresh guidance periodically (every 20 epochs) instead of once
-        # This prevents guidance from becoming stale as student evolves
-        guidance_refresh_interval = 20
-        should_refresh_guidance = (epoch % guidance_refresh_interval == 0)
-        
-        # 1. Get pruning guidance from middle teacher (augmentation expert)
+        # Get pruning guidance from middle teacher (augmentation expert)
         pruning_guidance = None
         pruning_loss = torch.tensor(0.0, device=self.device)
         if self.middle_teacher:
             with torch.no_grad():
-                # FIX 2.2: Error-driven guidance - compute student errors first
-                if should_refresh_guidance and epoch > 0:
-                    # Get student's current predictions to identify weak areas
-                    student_embeds = self.student.get_embeds(self.feats, self.mps)
-                    # Note: In production, you'd compute actual errors on validation set
-                    # For now, we'll use the standard guidance but refresh it periodically
-                    pass
-                
                 # Get comprehensive augmentation guidance
                 pruning_guidance = self.middle_teacher.get_pruning_guidance(
                     self.feats, self.mps, self.nei_index
@@ -276,7 +262,7 @@ class StudentTrainer:
                 )
         
         # 2. Forward pass - student loss with augmentation guidance
-        # FIX 2.8: Clarified terminology - middle teacher provides AUGMENTATION guidance, not pruning
+        # Clarified terminology - middle teacher provides AUGMENTATION guidance, not pruning
         middle_teacher_guidance = None
         if self.middle_teacher and self.student.use_middle_teacher_guidance:
             with torch.no_grad():
@@ -294,24 +280,12 @@ class StudentTrainer:
                                    middle_teacher_guidance=middle_teacher_guidance)
         
         # 3. Knowledge distillation from main teacher ONLY
-        # FIX 2.8: Clarified roles - Main teacher for KD, Middle teacher for augmentation guidance only
+        # Clarified roles - Main teacher for KD, Middle teacher for augmentation guidance only
         kd_loss = torch.tensor(0.0, device=self.device)
         
-        # Main teacher: Pure knowledge distillation (no augmentation)
+        # Main teacher: Pure knowledge distillation
         if self.teacher:
-            # Use the COMPREHENSIVE distillation framework with all advanced loss types
-            if hasattr(self.kd_framework, 'calc_distillation_losss'):
-                # Use the comprehensive loss with InfoNCE, self-contrast, multi-level, etc.
-                kd_loss, loss_breakdown = self.kd_framework.calc_distillation_loss(
-                    self.feats, self.mps, self.nei_index, self.pos,
-                    nodes=contrastive_nodes, num_classes=self.nb_classes,
-                    distill_config=get_distillation_config(self.args)
-                )
-                # Extract the main loss from breakdown
-                kd_loss = loss_breakdown.get('distill_loss', kd_loss)
-
-            elif hasattr(self.kd_framework, 'calc_knowledge_distillation_loss'):
-                # Fallback to simple version
+            if hasattr(self.kd_framework, 'calc_knowledge_distillation_loss'):
                 kd_loss = self.kd_framework.calc_knowledge_distillation_loss(
                     self.feats, self.mps, self.nei_index, distill_config={
                         'distill_weight': self.args.stage2_distill_weight,
@@ -321,6 +295,8 @@ class StudentTrainer:
                         'use_info_nce': getattr(self.args, 'use_info_nce', True)
                     }
                 )
+            else:
+                print("No distillation method found in KD framework.")
         
         # 4. Subspace contrastive loss guided by augmentation patterns
         subspace_loss = torch.tensor(0.0, device=self.device)
@@ -342,7 +318,7 @@ class StudentTrainer:
                     contrastive_nodes, temperature=1.0, weight=0.1
                 )
         
-        # 4.5. NEW: Link prediction losses for better edge modeling
+        # 4.5. Link prediction losses for better edge modeling
         link_recon_loss = torch.tensor(0.0, device=self.device)
         relational_loss = torch.tensor(0.0, device=self.device)
         
@@ -438,13 +414,92 @@ class StudentTrainer:
         if relational_loss > 0:
             total_loss += relational_kd_weight * relational_loss
         
+        # Apply periodically to avoid overhead
+        advanced_losses = {}
+        
+        # Multi-hop link prediction (every 3 epochs)
+        if getattr(self.args, 'use_multihop_link_loss', True) and (epoch % 3 == 0 or epoch < 30):
+            try:
+                from models.kd_heco import multi_hop_link_prediction_loss
+                multihop_loss = multi_hop_link_prediction_loss(
+                    student_embeds, self.mps, 
+                    num_samples=1000, 
+                    max_hops=getattr(self.args, 'max_hops', 3),
+                    temperature=1.0
+                )
+                multihop_weight = getattr(self.args, 'multihop_weight', 0.3)
+                total_loss += multihop_weight * multihop_loss
+                advanced_losses['multihop'] = multihop_loss.item()
+            except Exception as e:
+                if epoch == 0:
+                    print(f"⚠️ Multi-hop loss disabled: {e}")
+                advanced_losses['multihop'] = 0.0
+        else:
+            advanced_losses['multihop'] = 0.0
+        
+        # Meta-path specific link loss (every 4 epochs)
+        if getattr(self.args, 'use_metapath_specific_loss', True) and (epoch % 4 == 0 or epoch < 30):
+            try:
+                from models.kd_heco import metapath_specific_link_loss
+                metapath_loss = metapath_specific_link_loss(
+                    student_embeds, self.mps,
+                    num_samples_per_path=500,
+                    temperature=1.0
+                )
+                metapath_weight = getattr(self.args, 'metapath_specific_weight', 0.25)
+                total_loss += metapath_weight * metapath_loss
+                advanced_losses['metapath'] = metapath_loss.item()
+            except Exception as e:
+                if epoch == 0:
+                    print(f"⚠️ Meta-path specific loss disabled: {e}")
+                advanced_losses['metapath'] = 0.0
+        else:
+            advanced_losses['metapath'] = 0.0
+        
+        # Structural distance preservation (every 2 epochs)
+        if getattr(self.args, 'use_structural_distance', True) and (epoch % 2 == 0):
+            try:
+                from models.kd_heco import structural_distance_preservation_loss
+                struct_dist_loss = structural_distance_preservation_loss(
+                    teacher_embeds, student_embeds,
+                    sampled_nodes=None,
+                    temperature=1.5
+                )
+                struct_weight = getattr(self.args, 'structural_distance_weight', 0.2)
+                total_loss += struct_weight * struct_dist_loss
+                advanced_losses['struct_dist'] = struct_dist_loss.item()
+            except Exception as e:
+                if epoch == 0:
+                    print(f"⚠️ Structural distance loss disabled: {e}")
+                advanced_losses['struct_dist'] = 0.0
+        else:
+            advanced_losses['struct_dist'] = 0.0
+        
+        # Attention transfer (every 5 epochs)
+        if getattr(self.args, 'use_attention_transfer', True) and (epoch % 5 == 0 or epoch < 30):
+            try:
+                from models.kd_heco import attention_transfer_loss
+                att_transfer_loss = attention_transfer_loss(
+                    teacher_embeds, student_embeds,
+                    power=2
+                )
+                att_weight = getattr(self.args, 'attention_transfer_weight', 0.15)
+                total_loss += att_weight * att_transfer_loss
+                advanced_losses['attention'] = att_transfer_loss.item()
+            except Exception as e:
+                if epoch == 0:
+                    print(f"⚠️ Attention transfer loss disabled: {e}")
+                advanced_losses['attention'] = 0.0
+        else:
+            advanced_losses['attention'] = 0.0
+        
         # Backward pass
         total_loss.backward()
         self.optimizer.step()
         
         return (total_loss.item(), student_loss.item(), kd_loss.item(), 
                 pruning_loss.item(), subspace_loss.item(), 
-                link_recon_loss.item(), relational_loss.item())
+                link_recon_loss.item(), relational_loss.item(), advanced_losses)
     
     def validate(self):
         """Validate the model"""
@@ -507,36 +562,52 @@ class StudentTrainer:
             # Epoch-level NumPy seeding for reproducibility of any np-based sampling
             np.random.seed(self.args.seed + epoch)
             # Enhanced training step with dual-teacher guidance, distillation, and pruning
-            # FIX 2.1: Pass epoch number for guidance refresh
+            # Pass epoch number for guidance refresh
             loss_tuple = self.train_epoch(epoch=epoch)
             
             # Handle different return formats
-            if len(loss_tuple) == 7:
+            if len(loss_tuple) == 8:
+                total_loss, student_loss, kd_loss, pruning_loss, subspace_loss, link_recon_loss, relational_loss, advanced_losses = loss_tuple
+            elif len(loss_tuple) == 7:
                 total_loss, student_loss, kd_loss, pruning_loss, subspace_loss, link_recon_loss, relational_loss = loss_tuple
+                advanced_losses = {}
             elif len(loss_tuple) == 5:
                 total_loss, student_loss, kd_loss, pruning_loss, subspace_loss = loss_tuple
                 link_recon_loss = relational_loss = 0.0
+                advanced_losses = {}
             else:
                 total_loss, student_loss, kd_loss = loss_tuple
                 pruning_loss = subspace_loss = link_recon_loss = relational_loss = 0.0
+                advanced_losses = {}
             
             # Validation step
             val_loss = self.validate()
 
             # Update progress bar with NEW link prediction metrics
-            # FIX 2.8: Updated terminology to reflect actual roles
+            # Updated terminology to reflect actual roles
             postfix_dict = {
                 'total': f"{total_loss:.4f}",
                 'student': f"{student_loss:.4f}",
                 'main_kd': f"{kd_loss:.4f}",  # Main teacher knowledge distillation
-                'aug_guide': f"{pruning_loss:.4f}",  # Middle teacher augmentation guidance (not pruning!)
+                'aug_guide': f"{pruning_loss:.4f}",  # Middle teacher augmentation guidance
                 'subspace': f"{subspace_loss:.4f}",
-                'link_rec': f"{link_recon_loss:.4f}",  # NEW: Link reconstruction
-                'relation': f"{relational_loss:.4f}",  # NEW: Relational KD
+                'link_rec': f"{link_recon_loss:.4f}",  # Link reconstruction
+                'relation': f"{relational_loss:.4f}",  # Relational KD
                 'val': f"{val_loss:.4f}",
                 'best': f"{self.best_loss:.4f}",
                 'patience': f"{self.patience_counter}/{self.args.patience}"
             }
+            
+            # Add advanced losses to progress bar when active
+            if advanced_losses:
+                if advanced_losses.get('multihop', 0) > 0:
+                    postfix_dict['multihop'] = f"{advanced_losses['multihop']:.4f}"
+                if advanced_losses.get('metapath', 0) > 0:
+                    postfix_dict['metapath'] = f"{advanced_losses['metapath']:.4f}"
+                if advanced_losses.get('struct_dist', 0) > 0:
+                    postfix_dict['struct'] = f"{advanced_losses['struct_dist']:.4f}"
+                if advanced_losses.get('attention', 0) > 0:
+                    postfix_dict['attn'] = f"{advanced_losses['attention']:.4f}"
             
             # Add evaluation metrics when available
             if epoch % self.args.eval_interval == 0 and epoch > 0:
