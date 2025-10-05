@@ -14,7 +14,7 @@ from tqdm.auto import tqdm
 # Add utils to path
 sys.path.append('./utils')
 
-from models.kd_heco import PruningExpertTeacher, StudentMyHeCo, DualTeacherKD, count_parameters
+from models.kd_heco import AugmentationTeacher, StudentMyHeCo, DualTeacherKD, count_parameters
 from models.kd_params import kd_params, get_distillation_config, get_augmentation_config
 from utils.load_data import load_data
 from utils.evaluate import evaluate_node_classification
@@ -83,7 +83,7 @@ class StudentTrainer:
             self.idx_test = [idx.to(self.device) for idx in self.idx_test]
     
     def init_models(self):
-        """Initialize both teachers (main + expert) and student models"""
+        """Initialize both teachers (main + augmentation) and student models"""
         # Load pre-trained main teacher (trained on original data for knowledge distillation)
         print("Loading pre-trained main teacher...")
         from models.kd_heco import MyHeCo
@@ -112,8 +112,8 @@ class StudentTrainer:
             print("Warning: No main teacher model found. Training without knowledge distillation.")
             self.teacher = None
         
-        # Load pre-trained middle teacher (augmentation expert trained on augmented graphs)
-        print("Loading pre-trained augmentation expert teacher...")
+        # Load pre-trained middle teacher (augmentation trained on augmented graphs)
+        print("Loading pre-trained augmentation teacher...")
         
         # Prepare loss flags for middle teacher
         middle_teacher_loss_flags = {
@@ -121,7 +121,7 @@ class StudentTrainer:
             'middle_divergence_weight': self.args.middle_divergence_weight
         }
         
-        self.middle_teacher = PruningExpertTeacher(  # Name kept for compatibility
+        self.middle_teacher = AugmentationTeacher(  # Name kept for compatibility
             feats_dim_list=self.feats_dim_list,
             hidden_dim=self.args.hidden_dim,
             attn_drop=self.args.attn_drop,
@@ -183,8 +183,7 @@ class StudentTrainer:
         self.kd_framework = DualTeacherKD(
             teacher=self.teacher,           # Main teacher for knowledge distillation
             student=self.student,           # Student to be trained
-            middle_teacher=self.middle_teacher,  # Augmentation expert for robustness
-            augmentation_expert=self.middle_teacher   # Alias for clarity
+            augmentation_teacher=self.middle_teacher
         ).to(self.device)  # Move to GPU!
         
         # Add KD framework parameters to optimizer if it has trainable parameters
@@ -212,33 +211,26 @@ class StudentTrainer:
         else:
             print("Main teacher: Not loaded")
             
-        # FIX 2.7: Updated terminology
+        # Updated terminology
         if self.middle_teacher:
             middle_params = count_parameters(self.middle_teacher)
-            print(f"Augmentation expert teacher: {middle_params:,} parameters")
+            print(f"Augmentation teacher: {middle_params:,} parameters")
         else:
-            print("Augmentation expert teacher: Not loaded")
-            
+            print("Augmentation teacher: Not loaded")
+
         student_params = count_parameters(self.student)
         print(f"Student model: {student_params:,} parameters")
         print(f"Student compression ratio: {self.args.student_compression_ratio:.2f}")
         
         # Print dual-teacher mode info
         if self.teacher and self.middle_teacher:
-            print("🚀 Dual-Teacher Mode: Main teacher (knowledge distillation) + Augmentation expert (robustness)")
+            print("🚀 Dual-Teacher Mode: Main teacher (knowledge distillation) + Augmentation (robustness)")
         elif self.teacher:
             print("📚 Knowledge Distillation Mode: Main teacher only")
         elif self.middle_teacher:
-            print("🔄 Augmentation Guidance Mode: Augmentation expert only")
+            print("🔄 Augmentation Guidance Mode: Augmentation only")
         else:
             print("🎯 Self-Training Mode: No teacher guidance")
-        
-        # Check guidance status
-        print(f"Augmentation teacher guidance enabled: {self.student.use_augmentation_teacher_guidance}")
-        if self.student.use_augmentation_teacher_guidance:
-            print("✅ Student will use guidance from augmentation teacher")
-        else:
-            print("ℹ️ Student will train without guidance (standard mode)")
         
     def get_contrastive_nodes(self, batch_size=4096):
         """Get random nodes for contrastive learning"""
@@ -263,19 +255,19 @@ class StudentTrainer:
         # Get contrastive nodes for this batch
         contrastive_nodes = self.get_contrastive_nodes(batch_size=self.args.batch_size)
         
-        # Get augmentation guidance from middle teacher (augmentation expert) - CONTROLLED BY FLAG
+        # Get augmentation guidance from middle teacher (augmentation)
         augmentation_guidance = None
-        expert_alignment_loss = torch.tensor(0.0, device=self.device)
-        if self.middle_teacher and self.args.use_expert_alignment_loss:
+        augmentation_alignment_loss = torch.tensor(0.0, device=self.device)
+        if self.middle_teacher and self.args.use_augmentation_alignment_loss:
             with torch.no_grad():
                 # Get comprehensive augmentation guidance
                 augmentation_guidance = self.middle_teacher.get_augmentation_guidance(
                     self.feats, self.mps, self.nei_index
                 )
-            
-            # Calculate expert alignment loss for better guidance learning
-            if hasattr(self.kd_framework, 'calc_expert_alignment_loss'):
-                expert_alignment_loss = self.kd_framework.calc_expert_alignment_loss(
+
+            # Calculate augmentation alignment loss for better guidance learning
+            if hasattr(self.kd_framework, 'calc_augmentation_alignment_loss'):
+                augmentation_alignment_loss = self.kd_framework.calc_augmentation_alignment_loss(
                     self.feats, self.mps, self.nei_index, augmentation_guidance
                 )
         
@@ -284,7 +276,7 @@ class StudentTrainer:
         augmentation_teacher_guidance = None
         if self.middle_teacher and self.student.use_augmentation_teacher_guidance:
             with torch.no_grad():
-                # Get detailed representations from augmentation expert (middle teacher)
+                # Get detailed representations from augmentation (middle teacher)
                 mp_guidance, sc_guidance = self.middle_teacher.get_representations(
                     self.feats, self.mps, self.nei_index, use_augmentation=True
                 )
@@ -399,8 +391,6 @@ class StudentTrainer:
                 if epoch == 0 or epoch % 50 == 0:
                     print(f"⚠️ Warning: Relational KD error at epoch {epoch}: {e}")
     
-        # 5. Enhanced loss weighting
-        # FIX 2.8: Clear role separation
         total_loss = student_loss
         
         # Role assignment:
@@ -410,21 +400,19 @@ class StudentTrainer:
             # Main teacher: Primary knowledge distillation (full weight)
             main_kd_weight = self.args.stage2_distill_weight  # 0.8 default
             augmentation_guidance_weight = self.args.augmentation_weight  # Augmentation guidance weight
-            expert_align_weight = self.args.expert_alignment_weight  # Expert alignment weight
             
             total_loss += main_kd_weight * kd_loss  # Main teacher KD
-            total_loss += augmentation_guidance_weight * expert_alignment_loss  # Augmentation guidance from middle teacher
+            total_loss += augmentation_guidance_weight * augmentation_alignment_loss  # Augmentation guidance from middle teacher
 
         elif self.teacher:
             total_loss += self.args.stage2_distill_weight * kd_loss
             
         elif self.middle_teacher:
-            total_loss += self.args.augmentation_weight * expert_alignment_loss
+            total_loss += self.args.augmentation_weight * augmentation_alignment_loss
 
         if subspace_loss > 0:
             total_loss += self.args.subspace_weight * subspace_loss
         
-        # NEW: Add link prediction losses
         # Link reconstruction loss for explicit edge modeling
         if link_recon_loss > 0:
             total_loss += self.args.link_recon_weight * link_recon_loss
@@ -531,7 +519,7 @@ class StudentTrainer:
         self.optimizer.step()
         
         return (total_loss.item(), student_loss.item(), kd_loss.item(), 
-                expert_alignment_loss.item(), subspace_loss.item(), 
+                augmentation_alignment_loss.item(), subspace_loss.item(), 
                 link_recon_loss.item(), relational_loss.item(), advanced_losses)
     
     def validate(self):
@@ -598,17 +586,17 @@ class StudentTrainer:
             
             # Handle different return formats
             if len(loss_tuple) == 8:
-                total_loss, student_loss, kd_loss, expert_align_loss, subspace_loss, link_recon_loss, relational_loss, advanced_losses = loss_tuple
+                total_loss, student_loss, kd_loss, augmentation_alignment_loss, subspace_loss, link_recon_loss, relational_loss, advanced_losses = loss_tuple
             elif len(loss_tuple) == 7:
-                total_loss, student_loss, kd_loss, expert_align_loss, subspace_loss, link_recon_loss, relational_loss = loss_tuple
+                total_loss, student_loss, kd_loss, augmentation_alignment_loss, subspace_loss, link_recon_loss, relational_loss = loss_tuple
                 advanced_losses = {}
             elif len(loss_tuple) == 5:
-                total_loss, student_loss, kd_loss, expert_align_loss, subspace_loss = loss_tuple
+                total_loss, student_loss, kd_loss, augmentation_alignment_loss, subspace_loss = loss_tuple
                 link_recon_loss = relational_loss = 0.0
                 advanced_losses = {}
             else:
                 total_loss, student_loss, kd_loss = loss_tuple
-                expert_align_loss = subspace_loss = link_recon_loss = relational_loss = 0.0
+                augmentation_alignment_loss = subspace_loss = link_recon_loss = relational_loss = 0.0
                 advanced_losses = {}
             
             # Validation step
@@ -623,7 +611,7 @@ class StudentTrainer:
                 'total': f"{total_loss:.4f}",
                 'student': f"{student_loss:.4f}",
                 'main_kd': f"{kd_loss:.4f}",  # Main teacher knowledge distillation
-                'expert_align': f"{expert_align_loss:.4f}",  # Expert alignment / augmentation guidance
+                'augmentation_align': f"{augmentation_alignment_loss:.4f}",  # Augmentation alignment
                 'subspace': f"{subspace_loss:.4f}",
                 'link_rec': f"{link_recon_loss:.4f}",  # Link reconstruction
                 'relation': f"{relational_loss:.4f}",  # Relational KD

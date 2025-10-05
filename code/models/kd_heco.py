@@ -1113,13 +1113,13 @@ class DualTeacherKD(nn.Module):
     
     Two specialized teachers work together:
     1. Teacher: Provides knowledge distillation to student
-    2. Augmentation Expert: Provides augmentation guidance based on augmented graph learning
+    2. Augmentation Teacher: Provides augmentation guidance based on augmented graph learning
     """
-    def __init__(self, teacher=None, student=None, augmentation_expert=None):
+    def __init__(self, teacher=None, student=None, augmentation_teacher=None):
         super(DualTeacherKD, self).__init__()
         self.teacher = teacher  # Main teacher for knowledge distillation
         self.student = student  # Student model
-        self.augmentation_expert = augmentation_expert
+        self.augmentation_teacher = augmentation_teacher
         
         # Initialize prediction heads for knowledge alignment
         if self.student is not None and self.teacher is not None:
