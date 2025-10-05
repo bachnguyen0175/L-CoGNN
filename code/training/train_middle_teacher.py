@@ -12,7 +12,7 @@ from tqdm.auto import tqdm
 # Add utils to path
 sys.path.append('./utils')
 
-from models.kd_heco import PruningExpertTeacher, count_parameters
+from models.kd_heco import AugmentationTeacher, count_parameters
 from models.kd_params import kd_params, get_augmentation_config
 from utils.load_data import load_data
 from utils.evaluate import evaluate_node_classification
@@ -82,8 +82,8 @@ class MiddleTeacherTrainer:
         # Load pre-trained teacher
         print("Loading model...")
         
-        # Initialize middle teacher with augmentation (now PruningExpertTeacher)
-        self.middle_teacher = PruningExpertTeacher(
+        # Initialize middle teacher with augmentation
+        self.middle_teacher = AugmentationTeacher(
             feats_dim_list=self.feats_dim_list,
             hidden_dim=self.args.hidden_dim,
             attn_drop=self.args.attn_drop,

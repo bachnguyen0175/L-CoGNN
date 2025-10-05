@@ -20,7 +20,7 @@ echo "Training teacher model on GPU..."
 
 cd .. && PYTHONPATH=. ../.venv/bin/python training/pretrain_teacher.py \
     $DATASET \
-    --hidden_dim=64 \
+    --hidden_dim=128 \
     --nb_epochs=300 \
     --lr=0.0008 \
     --tau=0.8 \

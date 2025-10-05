@@ -3,9 +3,7 @@
 Heterogeneous Graph Augmentation Module - Compatible with HeCo Architecture
 
 Supported augmentations:
-1. Node Feature Masking
-2. Remasking Strategy
-3. Structure-Aware Meta-Path Connections (respects original graph topology)
+- Structure-Aware Meta-Path Connections (respects original graph topology)
 """
 
 import torch
@@ -13,84 +11,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Tuple, Dict, Any
 import numpy as np
-
-
-class HeteroNodeMasker(nn.Module):
-    """
-    Node feature masking augmentation adapted for HeCo architecture
-    """
-    def __init__(self, feats_dim_list: List[int], mask_rate: float = 0.1, 
-                 remask_rate: float = 0.3, num_remasking: int = 2):
-        super(HeteroNodeMasker, self).__init__()
-        self.mask_rate = mask_rate
-        self.remask_rate = remask_rate
-        self.num_remasking = num_remasking
-        
-        # Learnable mask tokens for each feature type
-        self.mask_tokens = nn.ParameterList([
-            nn.Parameter(torch.zeros(1, dim)) for dim in feats_dim_list
-        ])
-        
-        # Initialize mask tokens
-        for token in self.mask_tokens:
-            nn.init.xavier_normal_(token, gain=1.414)
-    
-    def forward(self, feats: List[torch.Tensor]) -> Tuple[List[torch.Tensor], Dict]:
-        """
-        Apply node feature masking
-        """
-        masked_feats = []
-        mask_info = {'masked_nodes': [], 'keep_nodes': []}
-        
-        for i, feat in enumerate(feats):
-            if i < len(self.mask_tokens):
-                masked_feat, mask_nodes, keep_nodes = self._mask_features(
-                    feat, self.mask_tokens[i], self.mask_rate
-                )
-                masked_feats.append(masked_feat)
-                mask_info['masked_nodes'].append(mask_nodes)
-                mask_info['keep_nodes'].append(keep_nodes)
-            else:
-                # If no mask token for this type, return original features
-                masked_feats.append(feat)
-                mask_info['masked_nodes'].append(torch.tensor([]))
-                mask_info['keep_nodes'].append(torch.arange(feat.size(0)))
-        
-        return masked_feats, mask_info
-    
-    def _mask_features(self, features: torch.Tensor, mask_token: torch.Tensor, 
-                      mask_rate: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Apply masking to node features"""
-        num_nodes = features.size(0)
-        perm = torch.randperm(num_nodes, device=features.device)
-        
-        # Random masking
-        num_mask_nodes = int(mask_rate * num_nodes)
-        mask_nodes = perm[:num_mask_nodes]
-        keep_nodes = perm[num_mask_nodes:]
-        
-        # Create masked features
-        masked_features = features.clone()
-        masked_features[mask_nodes] = 0.0
-        masked_features[mask_nodes] += mask_token
-        
-        return masked_features, mask_nodes, keep_nodes
-    
-    def remask_features(self, features: torch.Tensor, feat_idx: int) -> torch.Tensor:
-        """Apply remasking during training"""
-        if feat_idx >= len(self.mask_tokens):
-            return features
-        
-        num_nodes = features.size(0)
-        perm = torch.randperm(num_nodes, device=features.device)
-        num_remask_nodes = int(self.remask_rate * num_nodes)
-        remask_nodes = perm[:num_remask_nodes]
-        
-        remasked_features = features.clone()
-        remasked_features[remask_nodes] = 0.0
-        remasked_features[remask_nodes] += self.mask_tokens[feat_idx]
-        
-        return remasked_features
 
 
 class MetaPathConnector(nn.Module):
@@ -288,36 +208,22 @@ class MetaPathConnector(nn.Module):
 class HeteroAugmentationPipeline(nn.Module):
     """
     Heterogeneous graph augmentation pipeline with:
-    - Node Feature Masking
     - Structure-Aware Meta-Path Connections (respects original graph topology)
-    - Remasking Strategy
     """
     def __init__(self, feats_dim_list: List[int], augmentation_config: Dict[str, Any] = None):
         super(HeteroAugmentationPipeline, self).__init__()
         
-        # Default configuration - Node masking + Meta-path connections
+        # Default configuration - Meta-path connections only
         default_config = {
-            'use_node_masking': True,
-            'use_meta_path_connector': True,  # New: Meta-path connections
-            'mask_rate': 0.1,
-            'remask_rate': 0.3,
-            'num_remasking': 2,
+            'use_meta_path_connections': True,
             'connection_strength': 0.1
         }
         
+        # Merge default_config with augmentation_config (augmentation_config overrides defaults)
         self.config = {**default_config, **(augmentation_config or {})}
         
-        # Initialize augmentation modules
-        if self.config['use_node_masking']:
-            self.node_masker = HeteroNodeMasker(
-                feats_dim_list, 
-                self.config['mask_rate'],
-                self.config['remask_rate'],
-                self.config['num_remasking']
-            )
-        
         # Initialize meta-path connector
-        if self.config['use_meta_path_connector']:
+        if self.config.get('use_meta_path_connections', False):
             self.meta_path_connector = MetaPathConnector(
                 feats_dim_list,
                 self.config['connection_strength']
@@ -325,7 +231,7 @@ class HeteroAugmentationPipeline(nn.Module):
     
     def forward(self, feats: List[torch.Tensor], mps=None) -> Tuple[List[torch.Tensor], Dict]:
         """
-        Apply augmentation pipeline: Node masking + Meta-path connections
+        Apply augmentation pipeline: Meta-path connections
         Args:
             feats: List of node features
             mps: Optional list of meta-path adjacency matrices for structure-aware connections
@@ -333,13 +239,8 @@ class HeteroAugmentationPipeline(nn.Module):
         aug_feats = feats
         aug_info = {}
         
-        # Apply node masking augmentation
-        if self.config['use_node_masking'] and hasattr(self, 'node_masker'):
-            aug_feats, mask_info = self.node_masker(aug_feats)
-            aug_info['mask_info'] = mask_info
-        
         # Apply meta-path connections (structure-aware)
-        if self.config['use_meta_path_connector'] and hasattr(self, 'meta_path_connector'):
+        if self.config.get('use_meta_path_connections', False) and hasattr(self, 'meta_path_connector'):
             aug_feats, connection_info = self.meta_path_connector(aug_feats, mps)
             aug_info['connection_info'] = connection_info
         
@@ -388,11 +289,11 @@ class HeteroAugmentationPipeline(nn.Module):
     
     def disable_meta_path_connections(self):
         """Disable meta-path connections"""
-        self.config['use_meta_path_connector'] = False
+        self.config['use_meta_path_connections'] = False
     
     def enable_meta_path_connections(self):
         """Enable meta-path connections"""
-        self.config['use_meta_path_connector'] = True
+        self.config['use_meta_path_connections'] = True
     
     def get_pruning_targets(self, feats: List[torch.Tensor], aug_info: Dict) -> Dict:
         """
@@ -406,18 +307,6 @@ class HeteroAugmentationPipeline(nn.Module):
             Dict containing pruning targets and importance scores
         """
         pruning_targets = {}
-        
-        # Node-level pruning targets based on masking patterns
-        # FIXED LOGIC: Masked nodes should be MORE important (model must learn to recover them)
-        # This aligns with the feature-level importance logic below
-        if 'masked_nodes' in aug_info and len(aug_info['masked_nodes']) > 0:
-            for i, masked_nodes in enumerate(aug_info['masked_nodes']):
-                if len(masked_nodes) > 0:
-                    # Nodes that were masked are MORE important - model needs to focus on recovering them
-                    num_nodes = feats[i].size(0)
-                    node_importance = torch.ones(num_nodes, device=feats[i].device)
-                    node_importance[masked_nodes] *= 0.1  # INCREASE importance of masked nodes for robustness
-                    pruning_targets[f'node_importance_{i}'] = node_importance
         
         # Structure-level pruning targets based on meta-path connections
         if 'meta_path_connections' in aug_info:
@@ -440,21 +329,6 @@ class HeteroAugmentationPipeline(nn.Module):
             # Meta-path level importance
             mp_strength = self.get_meta_path_connection_strength()
             pruning_targets['meta_path_importance'] = torch.tensor(mp_strength)
-            
-        # Feature-level importance based on masking patterns
-        if 'mask_info' in aug_info and 'masked_nodes' in aug_info['mask_info']:
-            masked_counts = []
-            for masked_nodes in aug_info['mask_info']['masked_nodes']:
-                if len(masked_nodes) > 0:
-                    masked_counts.append(len(masked_nodes))
-                else:
-                    masked_counts.append(0)
-                    
-            if masked_counts and sum(masked_counts) > 0:
-                # Features with more masking are considered more important for robustness
-                feature_importance = torch.tensor(masked_counts, dtype=torch.float)
-                feature_importance = F.softmax(feature_importance, dim=0)
-                pruning_targets['feature_importance'] = feature_importance
         
         return pruning_targets
     
@@ -492,12 +366,9 @@ class HeteroAugmentationPipeline(nn.Module):
         # Create three different augmentation views
         for i, strength in enumerate([0.1, 0.2, 0.3]):
             # Temporarily adjust augmentation strength
-            original_mask_rate = self.config.get('mask_rate', 0.1)
             original_connection_strength = self.get_meta_path_connection_strength()
             
-            # Update strengths
-            if hasattr(self, 'node_masker'):
-                self.node_masker.mask_rate = strength
+            # Update strength
             self.set_meta_path_connection_strength(strength)
             
             # Generate augmented view
@@ -511,8 +382,6 @@ class HeteroAugmentationPipeline(nn.Module):
             comprehensive_info['view_infos'].append(aug_info_view)
             
             # Restore original settings
-            if hasattr(self, 'node_masker'):
-                self.node_masker.mask_rate = original_mask_rate
             self.set_meta_path_connection_strength(original_connection_strength)
         
         # Create consensus pruning targets across views

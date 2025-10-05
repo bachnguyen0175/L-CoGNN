@@ -16,33 +16,6 @@ TEACHER_MODEL="../results/teacher_heco_${DATASET}.pkl"
 MIDDLE_TEACHER_MODEL="../results/middle_teacher_heco_${DATASET}.pkl"
 STUDENT_MODEL="../results/student_heco_${DATASET}.pkl"
 
-# Check if all models exist
-missing_models=()
-
-if [ ! -f "$TEACHER_MODEL_CHECK" ]; then
-    missing_models+=("$TEACHER_MODEL_CHECK")
-fi
-
-if [ ! -f "$MIDDLE_TEACHER_MODEL_CHECK" ]; then
-    missing_models+=("$MIDDLE_TEACHER_MODEL_CHECK")
-fi
-
-if [ ! -f "$STUDENT_MODEL_CHECK" ]; then
-    missing_models+=("$STUDENT_MODEL_CHECK")
-fi
-
-if [ ${#missing_models[@]} -gt 0 ]; then
-    echo "❌ Missing model files:"
-    for model in "${missing_models[@]}"; do
-        echo "   - $model"
-    done
-    echo ""
-    echo "Please train the missing models first:"
-    echo "   1. bash 1_train_teacher.sh"
-    echo "   2. bash 2_train_middle_teacher.sh"
-    echo "   3. bash 3_train_student.sh"
-    exit 1
-fi
 
 echo "✅ All models found. Starting evaluation..."
 

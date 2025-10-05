@@ -21,7 +21,7 @@ from datetime import datetime
 # Add utils to path
 sys.path.append('./utils')
 
-from models.kd_heco import MyHeCo, StudentMyHeCo, PruningExpertTeacher
+from models.kd_heco import MyHeCo, StudentMyHeCo, AugmentationTeacher
 from models import kd_params
 from utils.load_data import load_data
 from utils.evaluate import (
@@ -175,7 +175,7 @@ class ComprehensiveEvaluator:
                 tau=self.args.tau,
                 lam=self.args.lam,
                 compression_ratio=compression_ratio,
-                use_middle_teacher_guidance=has_guidance  # Enable guidance if model has guidance parameters
+                use_augmentation_teacher_guidance=has_guidance
             ).to(self.device)
 
             if 'model_state_dict' in checkpoint:
@@ -187,15 +187,11 @@ class ComprehensiveEvaluator:
             compression_ratio = checkpoint.get('compression_ratio', 0.7)
             
             augmentation_config = {
-                'use_node_masking': getattr(self.args, 'use_node_masking', True),
-                'use_edge_augmentation': getattr(self.args, 'use_edge_augmentation', True),
-                'mask_rate': getattr(self.args, 'mask_rate', 0.1),
-                'remask_rate': getattr(self.args, 'remask_rate', 0.3),
-                'edge_drop_rate': getattr(self.args, 'edge_drop_rate', 0.1),
-                'num_remasking': getattr(self.args, 'num_remasking', 2)
+                'use_meta_path_connections': getattr(self.args, 'use_meta_path_connections', True),
+                'connection_strength': getattr(self.args, 'connection_strength', 0.2)
             }
 
-            model = PruningExpertTeacher(
+            model = AugmentationTeacher(
                 feats_dim_list=self.feats_dim_list,
                 hidden_dim=self.args.hidden_dim,
                 attn_drop=self.args.attn_drop,

@@ -101,7 +101,7 @@ class ModelEvaluator:
             tau=self.args.tau,
             lam=self.args.lam,
             compression_ratio=compression_ratio,
-            use_middle_teacher_guidance=has_guidance  # Enable guidance if model has guidance parameters
+            use_augmentation_teacher_guidance=has_guidance
         ).to(self.device)
         
         model.load_state_dict(checkpoint['model_state_dict'])

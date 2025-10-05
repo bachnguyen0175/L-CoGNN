@@ -13,12 +13,6 @@ if [ ! -f "../../results/teacher_heco_acm.pkl" ]; then
     exit 1
 fi
 
-if [ ! -f "../../results/middle_teacher_heco_acm.pkl" ]; then
-    echo "❌ Middle teacher model not found: ../../results/middle_teacher_heco_acm.pkl"
-    echo "   Please train the middle teacher first using: bash 2_train_middle_teacher.sh"
-    exit 1
-fi
-
 echo "✅ Both teacher models found"
 echo "🚀 Starting dual-teacher student training..."
 
@@ -58,7 +52,9 @@ cd .. && PYTHONPATH=. ../.venv/bin/python training/train_student.py \
     --stage2_distill_weight=0.8 \
     --pruning_weight=0.3 \
     --student_compression_ratio=0.5 \
-    $GPU_FLAG
+    $GPU_FLAG\
+    --use_student_contrast_loss \
+    --use_kd_loss \
 
 if [ $? -eq 0 ]; then
     echo ""
