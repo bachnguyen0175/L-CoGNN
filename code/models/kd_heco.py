@@ -214,7 +214,7 @@ class MyHeCo(nn.Module):
 
 class AugmentationTeacher(nn.Module):
     """
-    Augmentation Expert Teacher
+    Augmentation Teacher
     
     This middle teacher:
     - Learns on AUGMENTED heterogeneous graphs (masked nodes + meta-path connections)
@@ -299,7 +299,7 @@ class AugmentationTeacher(nn.Module):
         """
         Forward pass with augmentation-aware learning and guidance generation
         """
-        # Always apply augmentation for this expert - it's trained on augmented data
+        # Always apply augmentation
         aug_feats, aug_info = self.augmentation_pipeline(feats, mps=mps)
         
         # Process original and augmented features
@@ -318,8 +318,6 @@ class AugmentationTeacher(nn.Module):
         
         # FIXED: Removed contradictory consistency loss
         # We want the expert to learn DIFFERENT representations from augmented data
-        # Not the same (that would make augmentation useless)
-        # Instead, use contrastive divergence to encourage meaningful differences
         mp_divergence_loss = -F.cosine_similarity(z_mp_orig, z_mp_aug, dim=1).mean() * 0.05
         sc_divergence_loss = -F.cosine_similarity(z_sc_orig, z_sc_aug, dim=1).mean() * 0.05
         
@@ -332,7 +330,7 @@ class AugmentationTeacher(nn.Module):
         if return_augmentation_guidance or not self.training:
             augmentation_guidance = self._generate_augmentation_guidance(z_mp_aug, z_sc_aug, aug_info)
 
-        # Total expert loss: learn from both views with diversity bonus
+        # Total loss: learn from both views with diversity bonus
         total_loss = (contrast_loss_orig + contrast_loss_aug) * 0.5 + \
                     mp_divergence_loss + sc_divergence_loss
 
@@ -502,6 +500,8 @@ class StudentMyHeCo(nn.Module):
         if self.loss_flags.get('use_student_contrast_loss', True):
             contrast_loss = self.contrast(z_mp, z_sc, pos)
             total_loss += contrast_loss
+            print("Add Contrast loss: {:.4f}".format(contrast_loss.item()))
+            print("Total loss after adding contrast loss: {:.4f}".format(total_loss.item()))
         
         # Add guidance alignment loss if augmentation teacher guidance is used (CONTROLLED BY FLAG)
         if self.use_augmentation_teacher_guidance and augmentation_teacher_guidance is not None and self.training:
@@ -509,12 +509,16 @@ class StudentMyHeCo(nn.Module):
                 guidance_loss = self._compute_guidance_alignment_loss(z_mp, z_sc, augmentation_teacher_guidance)
                 guidance_weight = self.loss_flags.get('guidance_alignment_weight', 0.2)
                 total_loss += guidance_loss * guidance_weight
+                print("Add Guidance Alignment loss: {:.4f}".format(guidance_loss.item()))
+                print("Total loss after adding guidance alignment loss: {:.4f}".format(total_loss.item()))
             
             # Add entropy regularization to prevent guidance gate saturation (CONTROLLED BY FLAG)
             if self.loss_flags.get('use_gate_entropy_loss', False):
                 gate_entropy_loss = self._compute_gate_entropy_regularization()
                 gate_weight = self.loss_flags.get('gate_entropy_weight', 0.05)
                 total_loss += gate_entropy_loss * gate_weight
+                print("Add Gate Entropy Regularization loss: {:.4f}".format(gate_entropy_loss.item()))
+                print("Total loss after adding gate entropy regularization loss: {:.4f}".format(total_loss.item()))
             
         return total_loss
 
@@ -1134,16 +1138,16 @@ class DualTeacherKD(nn.Module):
                 nn.LayerNorm(teacher_dim)
             )
             
-        if self.student is not None and self.augmentation_expert is not None:
+        if self.student is not None and self.augmentation_teacher is not None:
             student_dim = getattr(self.student, 'student_dim', 64)
-            expert_dim = getattr(self.augmentation_expert, 'hidden_dim', 128)
+            teacher_dim = getattr(self.augmentation_teacher, 'hidden_dim', 128)
             
             # Augmentation guidance alignment head
             self.augmentation_alignment = nn.Sequential(
-                nn.Linear(student_dim, expert_dim // 2),
+                nn.Linear(student_dim, teacher_dim // 2),
                 nn.ReLU(),
-                nn.Linear(expert_dim // 2, expert_dim),
-                nn.LayerNorm(expert_dim)
+                nn.Linear(teacher_dim // 2, teacher_dim),
+                nn.LayerNorm(teacher_dim)
             )
     
     def forward(self):
@@ -1185,15 +1189,15 @@ class DualTeacherKD(nn.Module):
         return (mp_kd_loss + sc_kd_loss) * 0.5
 
     def calc_augmentation_alignment_loss(self, feats, mps, nei_index, augmentation_guidance):
-        """Calculate alignment loss between student and augmentation expert guidance"""
-        if self.augmentation_expert is None or self.student is None:
+        """Calculate alignment loss between student and augmentation teacher guidance"""
+        if self.augmentation_teacher is None or self.student is None:
             return torch.tensor(0.0, device=feats[0].device)
         
         # Get student representations
         student_mp, student_sc = self.student.get_representations(feats, mps, nei_index)
         
-        # Get expert representations (without augmentation for alignment)
-        expert_mp, expert_sc = self.augmentation_expert.get_representations(feats, mps, nei_index, use_augmentation=False)
+        # Get representations (without augmentation for alignment)
+        expert_mp, expert_sc = self.augmentation_teacher.get_representations(feats, mps, nei_index, use_augmentation=False)
         
         # Align dimensions
         if hasattr(self, 'augmentation_alignment'):
@@ -1219,13 +1223,13 @@ class DualTeacherKD(nn.Module):
         Detect when main teacher and augmentation teacher give conflicting guidance
         Returns conflict penalty in [0, 1] where 1 = high conflict
         """
-        if self.teacher is None or self.augmentation_expert is None:
+        if self.teacher is None or self.augmentation_teacher is None:
             return 0.0
         
         with torch.no_grad():
             # Get representations from both teachers
             teacher_mp, teacher_sc = self.teacher.get_representations(feats, mps, nei_index)
-            expert_mp, expert_sc = self.augmentation_expert.get_representations(feats, mps, nei_index, use_augmentation=False)
+            expert_mp, expert_sc = self.augmentation_teacher.get_representations(feats, mps, nei_index, use_augmentation=False)
             
             # Normalize for fair comparison
             teacher_mp_norm = F.normalize(teacher_mp, p=2, dim=1)

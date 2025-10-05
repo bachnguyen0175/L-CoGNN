@@ -391,7 +391,8 @@ class StudentTrainer:
                 if epoch == 0 or epoch % 50 == 0:
                     print(f"⚠️ Warning: Relational KD error at epoch {epoch}: {e}")
     
-        total_loss = student_loss
+        total_loss = 0
+        total_loss += student_loss
         
         # Role assignment:
         # - Main teacher: Knowledge distillation (learned representations from clean data)
@@ -584,20 +585,7 @@ class StudentTrainer:
             np.random.seed(self.args.seed + epoch)
             loss_tuple = self.train_epoch(epoch=epoch)
             
-            # Handle different return formats
-            if len(loss_tuple) == 8:
-                total_loss, student_loss, kd_loss, augmentation_alignment_loss, subspace_loss, link_recon_loss, relational_loss, advanced_losses = loss_tuple
-            elif len(loss_tuple) == 7:
-                total_loss, student_loss, kd_loss, augmentation_alignment_loss, subspace_loss, link_recon_loss, relational_loss = loss_tuple
-                advanced_losses = {}
-            elif len(loss_tuple) == 5:
-                total_loss, student_loss, kd_loss, augmentation_alignment_loss, subspace_loss = loss_tuple
-                link_recon_loss = relational_loss = 0.0
-                advanced_losses = {}
-            else:
-                total_loss, student_loss, kd_loss = loss_tuple
-                augmentation_alignment_loss = subspace_loss = link_recon_loss = relational_loss = 0.0
-                advanced_losses = {}
+            total_loss, student_loss, kd_loss, augmentation_alignment_loss, subspace_loss, link_recon_loss, relational_loss, advanced_losses = loss_tuple
             
             # Validation step
             val_loss = self.validate()
