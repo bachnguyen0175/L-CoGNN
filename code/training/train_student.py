@@ -152,7 +152,6 @@ class StudentTrainer:
         # Prepare loss flags for student
         student_loss_flags = {
             'use_student_contrast_loss': self.args.use_student_contrast_loss,
-            'use_guidance_alignment_loss': self.args.use_guidance_alignment_loss,
             'use_gate_entropy_loss': self.args.use_gate_entropy_loss,
             'guidance_alignment_weight': self.args.guidance_alignment_weight,
             'gate_entropy_weight': self.args.gate_entropy_weight

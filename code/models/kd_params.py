@@ -49,13 +49,13 @@ def kd_params():
     
     # Link Prediction Loss Flags
     # 5
-    parser.add_argument('--use_link_recon_loss', action='store_true', default=False, help="Use link reconstruction loss")
+    parser.add_argument('--use_link_recon_loss', action='store_true', default=True, help="Use link reconstruction loss")
     # 6
-    parser.add_argument('--use_relational_kd_loss', action='store_true', default=False, help="Use relational KD loss")
+    parser.add_argument('--use_relational_kd_loss', action='store_true', default=True, help="Use relational KD loss")
     
     # Advanced Loss Flags
     # 7
-    parser.add_argument('--use_multihop_link_loss', action='store_true', default=False, help="Use multi-hop link prediction loss")
+    parser.add_argument('--use_multihop_link_loss', action='store_true', default=True, help="Use multi-hop link prediction loss")
     # 8
     parser.add_argument('--use_metapath_specific_loss', action='store_true', default=False, help="Use meta-path specific link loss")
     # 9
