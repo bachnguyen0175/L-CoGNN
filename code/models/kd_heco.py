@@ -221,7 +221,7 @@ class AugmentationTeacher(nn.Module):
     - Provides AUGMENTATION GUIDANCE to help student learn robust representations
     """
     def __init__(self, feats_dim_list, hidden_dim, attn_drop, feat_drop, P, sample_rate, nei_num, tau, lam, 
-                 augmentation_config=None, loss_flags=None):
+                 augmentation_config=None):
         super(AugmentationTeacher, self).__init__()
         self.expert_dim = hidden_dim
         self.P = P
@@ -230,11 +230,6 @@ class AugmentationTeacher(nn.Module):
         self.tau = tau
         self.lam = lam
         self.feats_dim_list = feats_dim_list
-        
-        # Loss control flags
-        self.loss_flags = loss_flags if loss_flags is not None else {
-            'use_middle_divergence_loss': False
-        }
         
         # Feature projection layers optimized for augmented data
         self.fc_list = nn.ModuleList([nn.Linear(feats_dim, self.expert_dim, bias=True)
@@ -288,7 +283,6 @@ class AugmentationTeacher(nn.Module):
         if self.expert_dim % num_heads != 0:
             num_heads = 1  # Fall back to single head if not divisible
             
-        # FIX 2.3: Removed unused 'mask_predictor' - was never used by student
         self.cross_aug_learning = nn.ModuleDict({
             'structure_predictor': nn.Linear(self.expert_dim, self.expert_dim),  # Predict structural importance
             'combined_projector': nn.Linear(self.expert_dim * 2, self.expert_dim),  # Project combined to expert_dim
@@ -316,8 +310,6 @@ class AugmentationTeacher(nn.Module):
         z_mp_aug = self.mp(h_all_aug[0], mps)
         z_sc_aug = self.sc(h_all_aug, nei_index)
         
-        # FIXED: Removed contradictory consistency loss
-        # We want the expert to learn DIFFERENT representations from augmented data
         mp_divergence_loss = -F.cosine_similarity(z_mp_orig, z_mp_aug, dim=1).mean() * 0.05
         sc_divergence_loss = -F.cosine_similarity(z_sc_orig, z_sc_aug, dim=1).mean() * 0.05
         
@@ -428,7 +420,6 @@ class StudentMyHeCo(nn.Module):
         # Loss control flags
         self.loss_flags = loss_flags if loss_flags is not None else {
             'use_student_contrast_loss': True,
-            'use_guidance_alignment_loss': True,
             'use_gate_entropy_loss': True
         }
 
@@ -500,25 +491,12 @@ class StudentMyHeCo(nn.Module):
         if self.loss_flags.get('use_student_contrast_loss', True):
             contrast_loss = self.contrast(z_mp, z_sc, pos)
             total_loss += contrast_loss
-            print("Add Contrast loss: {:.4f}".format(contrast_loss.item()))
-            print("Total loss after adding contrast loss: {:.4f}".format(total_loss.item()))
-        
-        # Add guidance alignment loss if augmentation teacher guidance is used (CONTROLLED BY FLAG)
-        if self.use_augmentation_teacher_guidance and augmentation_teacher_guidance is not None and self.training:
-            if self.loss_flags.get('use_guidance_alignment_loss', False):
-                guidance_loss = self._compute_guidance_alignment_loss(z_mp, z_sc, augmentation_teacher_guidance)
-                guidance_weight = self.loss_flags.get('guidance_alignment_weight', 0.2)
-                total_loss += guidance_loss * guidance_weight
-                print("Add Guidance Alignment loss: {:.4f}".format(guidance_loss.item()))
-                print("Total loss after adding guidance alignment loss: {:.4f}".format(total_loss.item()))
             
-            # Add entropy regularization to prevent guidance gate saturation (CONTROLLED BY FLAG)
+            # Add entropy regularization to prevent guidance gate saturation
             if self.loss_flags.get('use_gate_entropy_loss', False):
                 gate_entropy_loss = self._compute_gate_entropy_regularization()
                 gate_weight = self.loss_flags.get('gate_entropy_weight', 0.05)
                 total_loss += gate_entropy_loss * gate_weight
-                print("Add Gate Entropy Regularization loss: {:.4f}".format(gate_entropy_loss.item()))
-                print("Total loss after adding gate entropy regularization loss: {:.4f}".format(total_loss.item()))
             
         return total_loss
 
@@ -583,28 +561,6 @@ class StudentMyHeCo(nn.Module):
             raise ValueError(f"Unknown module_type: {module_type}")
             
         return result
-    
-    def _compute_guidance_alignment_loss(self, z_mp, z_sc, augmentation_teacher_guidance):
-        """
-        Simple alignment loss to learn from augmentation teacher guidance
-        """
-        total_loss = torch.tensor(0.0, device=z_mp.device)
-        
-        # Align meta-path representations
-        if 'mp_guidance' in augmentation_teacher_guidance:
-            mp_target = augmentation_teacher_guidance['mp_guidance']
-            if mp_target.size(-1) == z_mp.size(-1) and mp_target.size(0) == z_mp.size(0):
-                mp_loss = F.mse_loss(z_mp, mp_target.detach())
-                total_loss += mp_loss * 0.5
-        
-        # Align schema representations
-        if 'sc_guidance' in augmentation_teacher_guidance:
-            sc_target = augmentation_teacher_guidance['sc_guidance']
-            if sc_target.size(-1) == z_sc.size(-1) and sc_target.size(0) == z_sc.size(0):
-                sc_loss = F.mse_loss(z_sc, sc_target.detach())
-                total_loss += sc_loss * 0.5
-        
-        return total_loss
     
     def _compute_gate_entropy_regularization(self):
         """
@@ -705,39 +661,6 @@ def KLDiverge(teacher_logits, student_logits, temperature):
     teacher_probs = F.softmax(teacher_logits / temperature, dim=-1)
     student_log_probs = F.log_softmax(student_logits / temperature, dim=-1)
     return F.kl_div(student_log_probs, teacher_probs, reduction='batchmean') * (temperature ** 2)
-
-
-def self_contrast_loss(mp_embeds, sc_embeds, unique_nodes, temperature=1.0, weight=1.0):
-    """
-    Self-contrast loss adapted for heterogeneous graphs
-    Enhances negative sampling by contrasting within embeddings
-    
-    OPTIMIZED: Pre-compute similarity matrices and use logsumexp for numerical stability
-    """
-    # Split nodes once
-    mid = len(unique_nodes) // 2 if len(unique_nodes) > 1 else len(unique_nodes)
-    unique_mp_nodes = unique_nodes[:mid]
-    unique_sc_nodes = unique_nodes[mid:] if mid < len(unique_nodes) else unique_nodes
-    
-    # Pre-compute picked embeddings (avoid redundant indexing)
-    mp_picked = mp_embeds[unique_mp_nodes]  # [B1, D]
-    sc_picked = sc_embeds[unique_sc_nodes]  # [B2, D]
-    
-    # Compute similarity matrices once (reuse for loss computation)
-    # Using matrix multiplication instead of separate function calls
-    mp_sc_sim = (mp_picked @ sc_embeds.T) / temperature  # [B1, N]
-    sc_mp_sim = (sc_picked @ mp_embeds.T) / temperature  # [B2, N]
-    mp_mp_sim = (mp_picked @ mp_embeds.T) / temperature  # [B1, N]
-    sc_sc_sim = (sc_picked @ sc_embeds.T) / temperature  # [B2, N]
-    
-    # Vectorized loss computation using logsumexp (numerically stable)
-    # torch.logsumexp(x) = log(sum(exp(x))) but more stable
-    loss = torch.logsumexp(mp_sc_sim, dim=-1).mean()
-    loss += torch.logsumexp(sc_mp_sim, dim=-1).mean()
-    loss += torch.logsumexp(mp_mp_sim, dim=-1).mean()
-    loss += torch.logsumexp(sc_sc_sim, dim=-1).mean()
-    
-    return loss * weight
 
 
 def subspace_contrastive_loss_hetero(mp_embeds, sc_embeds, mp_masks, sc_masks, 

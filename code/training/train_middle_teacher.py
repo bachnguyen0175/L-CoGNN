@@ -81,7 +81,7 @@ class MiddleTeacherTrainer:
         """Initialize teacher and middle teacher models"""
         # Load pre-trained teacher
         print("Loading model...")
-        
+
         # Initialize middle teacher with augmentation
         self.middle_teacher = AugmentationTeacher(
             feats_dim_list=self.feats_dim_list,

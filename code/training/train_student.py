@@ -115,12 +115,6 @@ class StudentTrainer:
         # Load pre-trained middle teacher (augmentation trained on augmented graphs)
         print("Loading pre-trained augmentation teacher...")
         
-        # Prepare loss flags for middle teacher
-        middle_teacher_loss_flags = {
-            'use_middle_divergence_loss': self.args.use_middle_divergence_loss,
-            'middle_divergence_weight': self.args.middle_divergence_weight
-        }
-        
         self.middle_teacher = AugmentationTeacher(  # Name kept for compatibility
             feats_dim_list=self.feats_dim_list,
             hidden_dim=self.args.hidden_dim,
@@ -131,8 +125,7 @@ class StudentTrainer:
             nei_num=self.args.nei_num,
             tau=self.args.tau,
             lam=self.args.lam,
-            augmentation_config=self.augmentation_config,
-            loss_flags=middle_teacher_loss_flags
+            augmentation_config=self.augmentation_config
         ).to(self.device)
 
         # Load middle teacher checkpoint - handle compression dimension mismatch
@@ -399,8 +392,8 @@ class StudentTrainer:
         # - Middle teacher: Augmentation guidance (structural hints from augmented data)
         if self.teacher and self.middle_teacher:
             # Main teacher: Primary knowledge distillation (full weight)
-            main_kd_weight = self.args.stage2_distill_weight  # 0.8 default
-            augmentation_guidance_weight = self.args.augmentation_weight  # Augmentation guidance weight
+            main_kd_weight = self.args.stage2_distill_weight
+            augmentation_guidance_weight = self.args.augmentation_weight
             
             total_loss += main_kd_weight * kd_loss  # Main teacher KD
             total_loss += augmentation_guidance_weight * augmentation_alignment_loss  # Augmentation guidance from middle teacher
