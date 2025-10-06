@@ -1,72 +1,66 @@
 #!/bin/bash
-
-# Stage 3: Student Training from Middle Teacher
-echo "🟠 Stage 3: Training Student from Middle Teacher"
-echo "==============================================="
-
-DATASET="acm"
-# Paths for checking (from scripts directory)
-MIDDLE_TEACHER_MODEL_CHECK="../../results/models/middle_teacher_heco_${DATASET}.pkl"
-STUDENT_MODEL_CHECK="../../results/models/student_heco_${DATASET}.pkl"
-
-# Paths for Python script (from code directory after cd ..)
-MIDDLE_TEACHER_MODEL="../results/models/middle_teacher_heco_${DATASET}.pkl"
-STUDENT_MODEL="../results/models/student_heco_${DATASET}.pkl"
-
-# Check if student model already exists
-if [ -f "$STUDENT_MODEL_CHECK" ]; then
-    echo "✅ Student model already exists: $STUDENT_MODEL_CHECK"
-    echo "Delete the file if you want to retrain."
-    exit 0
-fi
+# Dual-Teacher Student Training Script
+# Train student model using both teachers:
+# 1. Main Teacher: Provides knowledge distillation (trained on original data)  
+# 2. Middle Teacher: Provides pruning guidance (trained on augmented data)
+echo "🟡 Stage 3: Training Student with Dual-Teacher Guidance"
+echo "========================================================"
 
 # Check if required models exist
-if [ ! -f "$MIDDLE_TEACHER_MODEL_CHECK" ]; then
-    echo "❌ Middle teacher model not found: $MIDDLE_TEACHER_MODEL_CHECK"
-    echo "Please run 2_train_middle_teacher.sh first"
+if [ ! -f "../../results/teacher_heco_acm.pkl" ]; then
+    echo "❌ Main teacher model not found: ../../results/teacher_heco_acm.pkl"
+    echo "   Please train the main teacher first using: bash 1_train_teacher.sh"
     exit 1
 fi
 
-echo "Training student from middle teacher on GPU..."
+echo "✅ Both teacher models found"
+echo "🚀 Starting dual-teacher student training..."
 
+# Check for GPU
+if command -v nvidia-smi &> /dev/null; then
+    echo "GPU detected, using CUDA acceleration"
+    GPU_FLAG="--gpu 0"
+else
+    echo "No GPU detected, using CPU"
+    GPU_FLAG="--gpu -1"
+fi
+
+# Training configuration
+DATASET="acm"
+TEACHER_PATH="../results/teacher_heco_acm.pkl"
+MIDDLE_TEACHER_PATH="../results/middle_teacher_heco_acm.pkl"
+STUDENT_SAVE_PATH="../results/student_heco_acm.pkl"
+
+echo "Configuration:"
+echo "  Dataset: $DATASET"
+echo "  Student epochs: $STUDENT_EPOCHS"
+echo "  Student compression: $STUDENT_COMPRESSION"
+echo "  Main teacher KD weight: $DISTILL_WEIGHT (knowledge distillation)"
+echo "  Middle teacher pruning weight: $PRUNING_WEIGHT (pruning guidance only)"
+echo "  Teacher path: $TEACHER_PATH"
+echo "  Middle teacher path: $MIDDLE_TEACHER_PATH"
+echo ""
+
+# Run dual-teacher student training
 cd .. && PYTHONPATH=. ../.venv/bin/python training/train_student.py \
     $DATASET \
-    --hidden_dim=64 \
-    --stage2_epochs=300 \
-    --patience=50 \
-    --lr=0.001 \
-    --tau=0.8 \
-    --feat_drop=0.3 \
-    --attn_drop=0.5 \
-    --sample_rate 7 1 \
-    --lam=0.5 \
-    --middle_teacher_path="$MIDDLE_TEACHER_MODEL" \
-    --student_save_path="$STUDENT_MODEL" \
+    --teacher_model_path $TEACHER_PATH \
+    --middle_teacher_path $MIDDLE_TEACHER_PATH \
+    --student_save_path $STUDENT_SAVE_PATH \
+    --stage2_epochs=500 \
+    --lr=0.0008 \
+    --stage2_distill_weight=0.8 \
+    --pruning_weight=0.3 \
     --student_compression_ratio=0.5 \
-    --distill_from_middle \
-    --use_embedding_kd \
-    --use_heterogeneous_kd \
-    --use_multi_level_kd \
-    --use_progressive_pruning \
-    --use_multi_stage \
-    --embedding_weight=0.5 \
-    --heterogeneous_weight=0.3 \
-    --multi_level_weight=0.4 \
-    --subspace_weight=0.3 \
-    --embedding_temp=4.0 \
-    --mask_epochs=100 \
-    --fixed_epochs=100 \
-    --pruning_start=10 \
-    --pruning_interval=10 \
-    --emb_prune_ratio=0.1 \
-    --mp_prune_ratio=0.05 \
-    --cuda \
-    --seed=42
+    $GPU_FLAG\
+    --use_student_contrast_loss \
+    --use_kd_loss \
 
 if [ $? -eq 0 ]; then
-    echo "✅ Student training completed!"
-    echo "📁 Model saved: $STUDENT_MODEL"
+    echo ""
+    echo "✅ Dual-teacher student training completed successfully!"
+    echo "📁 Student model saved to: $STUDENT_SAVE_PATH"
 else
-    echo "❌ Student training failed!"
+    echo "❌ Dual-teacher student training failed!"
     exit 1
 fi

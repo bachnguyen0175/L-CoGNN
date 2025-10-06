@@ -12,14 +12,14 @@ Available models:
 - Sc_encoder: Semantic-level attention encoder
 """
 
-from .kd_heco import MyHeCo, MiddleMyHeCo, StudentMyHeCo, MyHeCoKD, count_parameters, calculate_compression_ratio
+from .kd_heco import MyHeCo, AugmentationTeacher, StudentMyHeCo, DualTeacherKD, count_parameters, calculate_compression_ratio
 from .contrast import Contrast
 from .sc_encoder import Sc_encoder, inter_att, intra_att, mySc_encoder
 from .kd_params import kd_params, get_teacher_config, get_student_config, get_distillation_config
 
 __all__ = [
     # Main models
-    'MyHeCo', 'MiddleMyHeCo', 'StudentMyHeCo', 'MyHeCoKD',
+    'MyHeCo', 'AugmentationTeacher', 'StudentMyHeCo', 'DualTeacherKD',
     # Utilities
     'count_parameters', 'calculate_compression_ratio',
     # Components

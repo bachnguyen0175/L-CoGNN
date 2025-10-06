@@ -7,7 +7,6 @@ import torch
 import numpy as np
 import time
 import sys
-import argparse
 
 # Add utils to path
 sys.path.append('./utils')
@@ -18,6 +17,7 @@ from utils.evaluate import (
     evaluate_node_classification,
     evaluate_all_downstream_tasks,
 )
+from models.kd_params import kd_params
 
 
 class ModelEvaluator:
@@ -27,19 +27,15 @@ class ModelEvaluator:
         
         # Set dataset-specific parameters
         if args.dataset == "acm":
-            args.ratio = [60, 40]  # 60% train, 20% val, 20% test
             args.type_num = [4019, 7167, 60]  # [paper, author, subject]
             args.nei_num = 2
         elif args.dataset == "dblp":
-            args.ratio = [60, 40]   # 60% train, 20% val, 20% test
             args.type_num = [4057, 14328, 7723, 20]  # [paper, author, conference, term]
             args.nei_num = 3
         elif args.dataset == "aminer":
-            args.ratio = [60, 40]   # 60% train, 20% val, 20% test
             args.type_num = [6564, 13329, 35890]  # [paper, author, reference]
             args.nei_num = 2
         elif args.dataset == "freebase":
-            args.ratio = [60, 40]   # 60% train, 20% val, 20% test
             args.type_num = [3492, 2502, 33401, 4459]  # [movie, director, actor, writer]
             args.nei_num = 3
 
@@ -91,6 +87,9 @@ class ModelEvaluator:
         checkpoint = torch.load(model_path, map_location=self.device)
         compression_ratio = checkpoint.get('compression_ratio', 0.5)
         
+        # Check if this is an enhanced student model with guidance parameters
+        has_guidance = any('guidance' in key or 'fusion' in key for key in checkpoint['model_state_dict'].keys())
+        
         model = StudentMyHeCo(
             hidden_dim=self.args.hidden_dim,
             feats_dim_list=self.feats_dim_list,
@@ -101,7 +100,8 @@ class ModelEvaluator:
             nei_num=self.args.nei_num,
             tau=self.args.tau,
             lam=self.args.lam,
-            compression_ratio=compression_ratio
+            compression_ratio=compression_ratio,
+            use_augmentation_teacher_guidance=has_guidance
         ).to(self.device)
         
         model.load_state_dict(checkpoint['model_state_dict'])
@@ -411,22 +411,8 @@ class ModelEvaluator:
         print("\n" + "="*80)
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Evaluate and compare teacher vs student models')
-    parser.add_argument('--dataset', type=str, default='acm', help='Dataset name')
-    parser.add_argument('--teacher_model_path', type=str, required=True, help='Path to teacher model')
-    parser.add_argument('--student_model_path', type=str, required=True, help='Path to student model')
-    parser.add_argument('--hidden_dim', type=int, default=64, help='Hidden dimension')
-    parser.add_argument('--feat_drop', type=float, default=0.3, help='Feature dropout')
-    parser.add_argument('--attn_drop', type=float, default=0.5, help='Attention dropout')
-    parser.add_argument('--tau', type=float, default=0.8, help='Temperature parameter')
-    parser.add_argument('--lam', type=float, default=0.5, help='Lambda parameter')
-    parser.add_argument('--sample_rate', nargs='+', type=int, default=[7, 1], help='Sample rates')
-    parser.add_argument('--eva_lr', type=float, default=0.05, help='Evaluation learning rate')
-    parser.add_argument('--eva_wd', type=float, default=0, help='Evaluation weight decay')
-    parser.add_argument('--gpu', type=int, default=0, help='GPU device')
-    
-    args = parser.parse_args()
+def main():    
+    args = kd_params()
     
     # Set dataset-specific parameters
     if args.dataset == "acm":

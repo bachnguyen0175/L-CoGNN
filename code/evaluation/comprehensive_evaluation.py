@@ -8,7 +8,7 @@ This script evaluates teacher and student models on:
 3. Node Clustering (NMI, ARI, Accuracy, Modularity)
 
 Usage:
-    python comprehensive_evaluation.py --dataset acm --teacher_path teacher.pkl --student_path student.pkl
+    python comprehensive_evaluation.py --dataset acm --teacher_model_path teacher.pkl --student_path student.pkl
 """
 
 import os
@@ -21,7 +21,8 @@ from datetime import datetime
 # Add utils to path
 sys.path.append('./utils')
 
-from models.kd_heco import MyHeCo, StudentMyHeCo, MiddleMyHeCo
+from models.kd_heco import MyHeCo, StudentMyHeCo, AugmentationTeacher
+from models import kd_params
 from utils.load_data import load_data
 from utils.evaluate import (
     evaluate_node_classification,
@@ -54,21 +55,21 @@ class ComprehensiveEvaluator:
         """Load dataset with all necessary components"""
         # Set dataset-specific parameters
         if self.args.dataset == "acm":
-            self.args.ratio = [60, 40]  # 60% train, 20% val, 20% test
             self.args.type_num = [4019, 7167, 60]  # [paper, author, subject]
             self.args.nei_num = 2
         elif self.args.dataset == "dblp":
-            self.args.ratio = [60, 40]  # 60% train, 20% val, 20% test
             self.args.type_num = [4057, 14328, 7723, 20]  # [paper, author, conference, term]
             self.args.nei_num = 3
         elif self.args.dataset == "aminer":
-            self.args.ratio = [60, 40]  # 60% train, 20% val, 20% test
             self.args.type_num = [6564, 13329, 35890]  # [paper, author, reference]
             self.args.nei_num = 2
         elif self.args.dataset == "freebase":
-            self.args.ratio = [60, 40]  # 60% train, 20% val, 20% test
             self.args.type_num = [3492, 2502, 33401, 4459]  # [movie, director, actor, writer]
             self.args.nei_num = 3
+
+        # Set default ratio if not provided
+        if not hasattr(self.args, 'ratio'):
+            self.args.ratio = ["80_10_10"]
 
         data = load_data(self.args.dataset, self.args.ratio, self.args.type_num)
 
@@ -159,6 +160,10 @@ class ComprehensiveEvaluator:
         elif model_type == 'student':
             compression_ratio = checkpoint.get('compression_ratio', 0.5)
 
+            # Check if this is an enhanced student model with guidance parameters
+            state_dict = checkpoint.get('model_state_dict', checkpoint)
+            has_guidance = any('guidance' in key or 'fusion' in key for key in state_dict.keys())
+            
             model = StudentMyHeCo(
                 hidden_dim=self.args.hidden_dim,
                 feats_dim_list=self.feats_dim_list,
@@ -169,7 +174,8 @@ class ComprehensiveEvaluator:
                 nei_num=self.args.nei_num,
                 tau=self.args.tau,
                 lam=self.args.lam,
-                compression_ratio=compression_ratio
+                compression_ratio=compression_ratio,
+                use_augmentation_teacher_guidance=has_guidance
             ).to(self.device)
 
             if 'model_state_dict' in checkpoint:
@@ -181,19 +187,11 @@ class ComprehensiveEvaluator:
             compression_ratio = checkpoint.get('compression_ratio', 0.7)
             
             augmentation_config = {
-                'use_node_masking': getattr(self.args, 'use_node_masking', True),
-                'use_edge_augmentation': getattr(self.args, 'use_edge_augmentation', True),
-                'use_autoencoder': getattr(self.args, 'use_autoencoder', True),
-                'mask_rate': getattr(self.args, 'mask_rate', 0.1),
-                'remask_rate': getattr(self.args, 'remask_rate', 0.3),
-                'edge_drop_rate': getattr(self.args, 'edge_drop_rate', 0.1),
-                'num_remasking': getattr(self.args, 'num_remasking', 2),
-                'autoencoder_hidden_dim': self.args.hidden_dim // 2,  # Half of main hidden dim
-                'autoencoder_layers': 2,
-                'reconstruction_weight': getattr(self.args, 'reconstruction_weight', 0.1)
+                'use_meta_path_connections': getattr(self.args, 'use_meta_path_connections', True),
+                'connection_strength': getattr(self.args, 'connection_strength', 0.2)
             }
 
-            model = MiddleMyHeCo(
+            model = AugmentationTeacher(
                 feats_dim_list=self.feats_dim_list,
                 hidden_dim=self.args.hidden_dim,
                 attn_drop=self.args.attn_drop,
@@ -203,7 +201,6 @@ class ComprehensiveEvaluator:
                 nei_num=self.args.nei_num,
                 tau=self.args.tau,
                 lam=self.args.lam,
-                compression_ratio=compression_ratio,
                 augmentation_config=augmentation_config
             ).to(self.device)
 
@@ -315,23 +312,6 @@ class ComprehensiveEvaluator:
             print("   ⚠ Skipped (no edges available)")
             model_results['link_prediction'] = {'skipped': 'no edges available'}
 
-        # 3. Node Clustering
-        print("\n3. Node Clustering...")
-        try:
-            clustering_results = evaluate_node_clustering(
-                embeddings, self.label, self.nb_classes, self.device
-            )
-
-            model_results['node_clustering'] = clustering_results
-
-            print(f"   ✓ NMI: {clustering_results['nmi']:.4f} ± {clustering_results['nmi_std']:.4f}")
-            print(f"   ✓ ARI: {clustering_results['ari']:.4f} ± {clustering_results['ari_std']:.4f}")
-            print(f"   ✓ Accuracy: {clustering_results['accuracy']:.4f} ± {clustering_results['accuracy_std']:.4f}")
-            print(f"   ✓ Modularity: {clustering_results['modularity']:.4f}")
-
-        except Exception as e:
-            print(f"   ✗ Failed: {e}")
-            model_results['node_clustering'] = {'error': str(e)}
 
         return model_results
 
@@ -346,8 +326,16 @@ class ComprehensiveEvaluator:
             'task_comparisons': {}
         }
 
-        # Compare each task
-        for task in ['node_classification', 'link_prediction', 'node_clustering']:
+        # Store forgetting rates for AF calculation
+        # Focus on primary tasks: node_classification (50%) and link_prediction (50%)
+        forgetting_rates = []
+        task_weights = {
+            'node_classification': 0.5,
+            'link_prediction': 0.5
+        }
+
+        # Compare each task (node clustering removed - not primary for graph KD)
+        for task in ['node_classification', 'link_prediction']:
             if task in teacher_results and task in student_results:
                 if 'error' not in teacher_results[task] and 'error' not in student_results[task]:
                     task_comparison = {}
@@ -355,31 +343,78 @@ class ComprehensiveEvaluator:
                     if task == 'node_classification':
                         for metric in ['accuracy', 'macro_f1', 'micro_f1']:
                             if metric in teacher_results[task] and metric in student_results[task]:
-                                retention = student_results[task][metric] / teacher_results[task][metric]
+                                teacher_val = teacher_results[task][metric]
+                                student_val = student_results[task][metric]
+                                retention = student_val / teacher_val
                                 task_comparison[f'{metric}_retention'] = retention
+                                
+                                # Calculate forgetting: max(0, teacher - student) / teacher
+                                # Higher forgetting = worse distillation
+                                forgetting = max(0, teacher_val - student_val) / teacher_val
+                                task_comparison[f'{metric}_forgetting'] = forgetting
+                                forgetting_rates.append((forgetting, task_weights[task]))
 
                     elif task == 'link_prediction':
                         for metric in ['auc', 'ap']:
                             if metric in teacher_results[task] and metric in student_results[task]:
-                                retention = student_results[task][metric] / teacher_results[task][metric]
+                                teacher_val = teacher_results[task][metric]
+                                student_val = student_results[task][metric]
+                                retention = student_val / teacher_val
                                 task_comparison[f'{metric}_retention'] = retention
-
-                    elif task == 'node_clustering':
-                        for metric in ['nmi', 'ari', 'accuracy']:
-                            if metric in teacher_results[task] and metric in student_results[task]:
-                                retention = student_results[task][metric] / teacher_results[task][metric]
-                                task_comparison[f'{metric}_retention'] = retention
+                                
+                                # Calculate forgetting
+                                forgetting = max(0, teacher_val - student_val) / teacher_val
+                                task_comparison[f'{metric}_forgetting'] = forgetting
+                                forgetting_rates.append((forgetting, task_weights[task]))
 
                     comparison['task_comparisons'][task] = task_comparison
 
+        # Calculate Weighted Average Forget (AF) - Lower is better!
+        # Focus on primary tasks: 50% node classification + 50% link prediction
+        # (Node clustering removed as it's not a primary metric for graph KD)
+        if forgetting_rates:
+            # Compute weighted average
+            total_forgetting = sum(forgetting * weight for forgetting, weight in forgetting_rates)
+            total_weight = sum(weight for _, weight in forgetting_rates)
+            average_forget = total_forgetting / total_weight if total_weight > 0 else 0
+            
+            comparison['average_forget'] = average_forget
+            comparison['average_forget_percentage'] = average_forget * 100
+            comparison['weighting_scheme'] = 'node_classification: 50%, link_prediction: 50%'
+            
+            # Categorize distillation quality based on AF
+            if average_forget < 0.01:  # < 1% average forgetting
+                quality = "Excellent ✨"
+            elif average_forget < 0.03:  # 1-3% forgetting
+                quality = "Very Good ✅"
+            elif average_forget < 0.05:  # 3-5% forgetting
+                quality = "Good ✓"
+            elif average_forget < 0.10:  # 5-10% forgetting
+                quality = "Fair ⚠️"
+            else:  # > 10% forgetting
+                quality = "Needs Improvement ⚠️⚠️"
+            
+            comparison['distillation_quality'] = quality
+        else:
+            comparison['average_forget'] = None
+            comparison['distillation_quality'] = "Unknown"
+
         # Print comparison summary
         print(f"\n📊 PARAMETER REDUCTION: {comparison['parameter_reduction']*100:.1f}%")
-        print(f"📈 PERFORMANCE RETENTION:")
+        
+        if comparison['average_forget'] is not None:
+            print(f"📉 WEIGHTED AVERAGE FORGET (AF): {comparison['average_forget']:.4f} ({comparison['average_forget_percentage']:.2f}%)")
+            print(f"🎯 DISTILLATION QUALITY: {comparison['distillation_quality']}")
+            print(f"   Weighting: {comparison['weighting_scheme']}")
+            print(f"   (Lower AF = Better distillation, focus on primary tasks)")
+        
+        print(f"\n📈 PERFORMANCE RETENTION:")
 
         for task, task_comp in comparison['task_comparisons'].items():
             print(f"\n   {task.replace('_', ' ').title()}:")
-            for metric, retention in task_comp.items():
-                print(f"      {metric}: {retention*100:.1f}%")
+            for metric, value in task_comp.items():
+                if 'retention' in metric:
+                    print(f"      {metric}: {value*100:.1f}%")
 
         return comparison
 
@@ -402,19 +437,19 @@ class ComprehensiveEvaluator:
         print(f"Device: {self.device}")
 
         # Evaluate Teacher Model
-        if self.args.teacher_path and os.path.exists(self.args.teacher_path):
-            print(f"\nLoading teacher model: {self.args.teacher_path}")
-            teacher_model = self.load_model(self.args.teacher_path, 'teacher')
+        if self.args.teacher_model_path and os.path.exists(self.args.teacher_model_path):
+            print(f"\nLoading teacher model: {self.args.teacher_model_path}")
+            teacher_model = self.load_model(self.args.teacher_model_path, 'teacher')
             teacher_results = self.evaluate_single_model(teacher_model, "Teacher", "teacher")
             self.results['models']['teacher'] = teacher_results
         else:
-            print(f"⚠ Teacher model not found: {self.args.teacher_path}")
+            print(f"⚠ Teacher model not found: {self.args.teacher_model_path}")
             return None
 
         # Evaluate Student Model
-        if self.args.student_path and os.path.exists(self.args.student_path):
-            print(f"\nLoading student model: {self.args.student_path}")
-            student_model = self.load_model(self.args.student_path, 'student')
+        if self.args.student_model_path and os.path.exists(self.args.student_model_path):
+            print(f"\nLoading student model: {self.args.student_model_path}")
+            student_model = self.load_model(self.args.student_model_path, 'student')
             student_results = self.evaluate_single_model(student_model, "Student", "student")
             self.results['models']['student'] = student_results
 
@@ -423,7 +458,7 @@ class ComprehensiveEvaluator:
             self.results['comparison'] = comparison
 
         else:
-            print(f"⚠ Student model not found: {self.args.student_path}")
+            print(f"⚠ Student model not found: {self.args.student_model_path}")
 
         # Evaluate Middle Teacher (if provided)
         if hasattr(self.args, 'middle_teacher_path') and self.args.middle_teacher_path:
@@ -443,37 +478,7 @@ class ComprehensiveEvaluator:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Comprehensive evaluation for all three downstream tasks')
-
-    # Dataset parameters
-    parser.add_argument('--dataset', type=str, default='acm', choices=['acm', 'dblp', 'aminer', 'freebase'],
-                       help='Dataset name')
-
-    # Model paths
-    parser.add_argument('--teacher_path', type=str, required=True,
-                       help='Path to teacher model checkpoint')
-    parser.add_argument('--student_path', type=str, required=True,
-                       help='Path to student model checkpoint')
-    parser.add_argument('--middle_teacher_path', type=str, default=None,
-                       help='Path to middle teacher model checkpoint (optional)')
-
-    # Model parameters
-    parser.add_argument('--hidden_dim', type=int, default=64, help='Hidden dimension')
-    parser.add_argument('--feat_drop', type=float, default=0.3, help='Feature dropout')
-    parser.add_argument('--attn_drop', type=float, default=0.5, help='Attention dropout')
-    parser.add_argument('--tau', type=float, default=0.8, help='Temperature parameter')
-    parser.add_argument('--lam', type=float, default=0.5, help='Lambda parameter')
-    parser.add_argument('--sample_rate', nargs='+', type=int, default=[7, 1], help='Sample rates')
-
-    # Evaluation parameters
-    parser.add_argument('--eva_lr', type=float, default=0.05, help='Evaluation learning rate')
-    parser.add_argument('--eva_wd', type=float, default=0, help='Evaluation weight decay')
-
-    # System parameters
-    parser.add_argument('--gpu', type=int, default=0, help='GPU device (-1 for CPU)')
-    parser.add_argument('--output_path', type=str, default=None, help='Output path for results JSON')
-
-    args = parser.parse_args()
+    args = kd_params()
 
     # Set dataset-specific parameters
     if args.dataset == "acm":

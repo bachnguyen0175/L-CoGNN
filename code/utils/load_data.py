@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import scipy.sparse as sp
 import torch as th
@@ -45,7 +46,10 @@ def sparse_mx_to_torch_sparse_tensor(sparse_mx):
 
 def load_acm(ratio, type_num):
     # The order of node types: 0 p 1 a 2 s
-    path = "../data/acm/"
+    # Get the project root directory (two levels up from utils)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, '..', '..')
+    path = os.path.join(project_root, "data", "acm") + os.sep
     label = np.load(path + "labels.npy").astype('int32')
     label = encode_onehot(label)
     nei_a = np.load(path + "nei_a.npy", allow_pickle=True)
@@ -56,9 +60,9 @@ def load_acm(ratio, type_num):
     pap = sp.load_npz(path + "pap.npz")
     psp = sp.load_npz(path + "psp.npz")
     pos = sp.load_npz(path + "pos.npz")
-    train = [np.load(path + "train_" + str(i) + ".npy") for i in ratio]
-    test = [np.load(path + "test_" + str(i) + ".npy") for i in ratio]
-    val = [np.load(path + "val_" + str(i) + ".npy") for i in ratio]
+    train = [np.load(path + "train_" + str(ratio) + ".npy")]
+    test = [np.load(path + "test_" + str(ratio) + ".npy")]
+    val = [np.load(path + "val_" + str(ratio) + ".npy")]
 
     label = th.FloatTensor(label)
     nei_a = [th.LongTensor(i) for i in nei_a]
@@ -77,7 +81,9 @@ def load_acm(ratio, type_num):
 
 def load_dblp(ratio, type_num):
     # The order of node types: 0 a 1 p 2 c 3 t
-    path = "../data/dblp/"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, '..', '..')
+    path = os.path.join(project_root, "data", "dblp") + os.sep
     label = np.load(path + "labels.npy").astype('int32')
     label = encode_onehot(label)
     nei_p = np.load(path + "nei_p.npy", allow_pickle=True)
@@ -87,10 +93,10 @@ def load_dblp(ratio, type_num):
     apcpa = sp.load_npz(path + "apcpa.npz")
     aptpa = sp.load_npz(path + "aptpa.npz")
     pos = sp.load_npz(path + "pos.npz")
-    train = [np.load(path + "train_" + str(i) + ".npy") for i in ratio]
-    test = [np.load(path + "test_" + str(i) + ".npy") for i in ratio]
-    val = [np.load(path + "val_" + str(i) + ".npy") for i in ratio]
-    
+    train = [np.load(path + "train_" + str(ratio) + ".npy")]
+    test = [np.load(path + "test_" + str(ratio) + ".npy")]
+    val = [np.load(path + "val_" + str(ratio) + ".npy")]
+
     label = th.FloatTensor(label)
     nei_p = [th.LongTensor(i) for i in nei_p]
     feat_p = th.FloatTensor(preprocess_features(feat_p))
@@ -107,7 +113,9 @@ def load_dblp(ratio, type_num):
 
 def load_aminer(ratio, type_num):
     # The order of node types: 0 p 1 a 2 r
-    path = "../data/aminer/"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, '..', '..')
+    path = os.path.join(project_root, "data", "aminer") + os.sep
     label = np.load(path + "labels.npy").astype('int32')
     label = encode_onehot(label)
     nei_a = np.load(path + "nei_a.npy", allow_pickle=True)
@@ -119,9 +127,9 @@ def load_aminer(ratio, type_num):
     pap = sp.load_npz(path + "pap.npz")
     prp = sp.load_npz(path + "prp.npz")
     pos = sp.load_npz(path + "pos.npz")
-    train = [np.load(path + "train_" + str(i) + ".npy") for i in ratio]
-    test = [np.load(path + "test_" + str(i) + ".npy") for i in ratio]
-    val = [np.load(path + "val_" + str(i) + ".npy") for i in ratio]
+    train = [np.load(path + "train_" + str(ratio) + ".npy")]
+    test = [np.load(path + "test_" + str(ratio) + ".npy")]
+    val = [np.load(path + "val_" + str(ratio) + ".npy")]
 
     label = th.FloatTensor(label)
     nei_a = [th.LongTensor(i) for i in nei_a]
@@ -140,7 +148,9 @@ def load_aminer(ratio, type_num):
 
 def load_freebase(ratio, type_num):
     # The order of node types: 0 m 1 d 2 a 3 w
-    path = "../data/freebase/"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.join(script_dir, '..', '..')
+    path = os.path.join(project_root, "data", "freebase") + os.sep
     label = np.load(path + "labels.npy").astype('int32')
     label = encode_onehot(label)
     nei_d = np.load(path + "nei_d.npy", allow_pickle=True)
@@ -155,9 +165,9 @@ def load_freebase(ratio, type_num):
     mdm = sp.load_npz(path + "mdm.npz")
     mwm = sp.load_npz(path + "mwm.npz")
     pos = sp.load_npz(path + "pos.npz")
-    train = [np.load(path + "train_" + str(i) + ".npy") for i in ratio]
-    test = [np.load(path + "test_" + str(i) + ".npy") for i in ratio]
-    val = [np.load(path + "val_" + str(i) + ".npy") for i in ratio]
+    train = [np.load(path + "train_" + str(ratio) + ".npy")]
+    test = [np.load(path + "test_" + str(ratio) + ".npy")]
+    val = [np.load(path + "val_" + str(ratio) + ".npy")]
 
     label = th.FloatTensor(label)
     nei_d = [th.LongTensor(i) for i in nei_d]

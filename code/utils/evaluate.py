@@ -1,4 +1,5 @@
 import numpy as np
+from typing import Optional
 import torch
 from .logreg import LogReg
 import torch.nn as nn
@@ -81,22 +82,20 @@ def evaluate(embeds, ratio, idx_train, idx_val, idx_test, label, nb_classes, dev
             test_micro_f1s.append(test_f1_micro)
             logits_list.append(logits)
 
-        max_iter = val_accs.index(max(val_accs))
-        accs.append(test_accs[max_iter])
-        max_iter = val_macro_f1s.index(max(val_macro_f1s))
-        macro_f1s.append(test_macro_f1s[max_iter])
-        macro_f1s_val.append(val_macro_f1s[max_iter])
+    # Use a single selection criterion for consistency (best validation macro-F1)
+    best_iter = val_macro_f1s.index(max(val_macro_f1s))
+    accs.append(test_accs[best_iter])
+    macro_f1s.append(test_macro_f1s[best_iter])
+    macro_f1s_val.append(val_macro_f1s[best_iter])
+    micro_f1s.append(test_micro_f1s[best_iter])
 
-        max_iter = val_micro_f1s.index(max(val_micro_f1s))
-        micro_f1s.append(test_micro_f1s[max_iter])
-
-        # auc
-        best_logits = logits_list[max_iter]
-        best_proba = softmax(best_logits, dim=1)
-        auc_score_list.append(roc_auc_score(y_true=test_lbls.detach().cpu().numpy(),
-                                            y_score=best_proba.detach().cpu().numpy(),
-                                            multi_class='ovr'
-                                            ))
+    # AUC computed at the same best iteration
+    best_logits = logits_list[best_iter]
+    best_proba = softmax(best_logits, dim=1)
+    auc_score_list.append(roc_auc_score(y_true=test_lbls.detach().cpu().numpy(),
+                                        y_score=best_proba.detach().cpu().numpy(),
+                                        multi_class='ovr'
+                                        ))
 
     if isTest:
         print("\t[Classification] Macro-F1_mean: {:.4f} var: {:.4f}  Micro-F1_mean: {:.4f} var: {:.4f} auc {:.4f}"
@@ -157,7 +156,7 @@ def evaluate_node_classification(embeds, idx_train, idx_val, idx_test, label, nb
     test_macro_f1s = []
     logits_list = []
 
-    for iter_ in range(10000):
+    for iter_ in range(500):
         # train
         log.train()
         opt.zero_grad()
@@ -200,14 +199,11 @@ def evaluate_node_classification(embeds, idx_train, idx_val, idx_test, label, nb
         test_micro_f1s.append(test_f1_micro)
         logits_list.append(logits)
 
-    max_iter = val_accs.index(max(val_accs))
-    acc = test_accs[max_iter]
-
-    max_iter = val_macro_f1s.index(max(val_macro_f1s))
-    macro_f1 = test_macro_f1s[max_iter]
-
-    max_iter = val_micro_f1s.index(max(val_micro_f1s))
-    micro_f1 = test_micro_f1s[max_iter]
+    # FIX: Use the same epoch for all metrics (based on best validation macro F1)
+    best_iter = val_macro_f1s.index(max(val_macro_f1s))
+    acc = test_accs[best_iter]
+    macro_f1 = test_macro_f1s[best_iter]
+    micro_f1 = test_micro_f1s[best_iter]
 
     return acc, macro_f1, micro_f1
 
@@ -277,18 +273,19 @@ def evaluate_link_prediction(embeddings, test_edges, test_edges_false, device='c
         # Sort by score (descending)
         edge_list.sort(key=lambda x: x[0], reverse=True)
 
-        # Calculate Hits@K
+        # Calculate Hits@K (FIXED: proper recall-based calculation)
         if len(edge_list) >= k:
             top_k_edges = edge_list[:k]
             hits = sum([1 for score, label, edge in top_k_edges if label == 1])
-            hits_at_k[f'hits_at_{k}'] = hits / min(k, len(test_edges))
+            # Hits@K should be recall: how many true positives found in top-K
+            hits_at_k[f'hits_at_{k}'] = hits / len(test_edges)
         else:
             hits_at_k[f'hits_at_{k}'] = 0.0
 
     return auc_score, ap_score, hits_at_k
 
 
-def generate_negative_edges(pos_edges, num_nodes, num_neg_edges=None):
+def generate_negative_edges(pos_edges, num_nodes, num_neg_edges: Optional[int] = None, seed: Optional[int] = None):
     """
     Generate negative edges for link prediction evaluation
 
@@ -308,11 +305,12 @@ def generate_negative_edges(pos_edges, num_nodes, num_neg_edges=None):
     for edge in pos_edges:
         pos_edge_set.add((min(edge[0], edge[1]), max(edge[0], edge[1])))
 
+    rng = np.random.RandomState(seed) if seed is not None else np.random
     neg_edges = []
     while len(neg_edges) < num_neg_edges:
         # Sample random node pair
-        node1 = np.random.randint(0, num_nodes)
-        node2 = np.random.randint(0, num_nodes)
+        node1 = rng.randint(0, num_nodes)
+        node2 = rng.randint(0, num_nodes)
 
         if node1 != node2:  # No self-loops
             edge = (min(node1, node2), max(node1, node2))
@@ -323,7 +321,7 @@ def generate_negative_edges(pos_edges, num_nodes, num_neg_edges=None):
     return np.array(neg_edges)
 
 
-def split_edges_for_link_prediction(edges, test_ratio=0.1, val_ratio=0.05):
+def split_edges_for_link_prediction(edges, test_ratio=0.1, val_ratio=0.1):
     """
     Split edges into train/val/test sets for link prediction
 
@@ -433,10 +431,13 @@ def cluster_accuracy(true_labels, predicted_labels, n_clusters):
     """
     from scipy.optimize import linear_sum_assignment
 
+    # Remap labels to contiguous 0..C-1 to avoid indexing issues
+    tl_unique, tl_inv = np.unique(true_labels, return_inverse=True)
+    pl_unique, pl_inv = np.unique(predicted_labels, return_inverse=True)
     # Create confusion matrix
     confusion_matrix = np.zeros((n_clusters, n_clusters))
     for i in range(len(true_labels)):
-        confusion_matrix[true_labels[i], predicted_labels[i]] += 1
+        confusion_matrix[tl_inv[i], pl_inv[i]] += 1
 
     # Use Hungarian algorithm to find optimal label matching
     row_indices, col_indices = linear_sum_assignment(-confusion_matrix)
@@ -526,11 +527,13 @@ def evaluate_all_downstream_tasks(embeddings, labels, edges=None, num_nodes=None
     # 1. Node Classification Evaluation
     print("\n1. Node Classification...")
     try:
-        # Create train/val/test splits (you may want to use your existing splits)
+        # WARNING: This creates random splits each time - should use fixed splits for fair comparison!
+        # FIXED: Use fixed random seed for reproducible splits
         num_nodes_total = embeddings.shape[0]
+        np.random.seed(42)  # Fixed seed for reproducibility
         indices = np.random.permutation(num_nodes_total)
 
-        train_ratio, val_ratio, test_ratio = 0.6, 0.2, 0.2
+        train_ratio, val_ratio, test_ratio = 0.8, 0.1, 0.1
         train_size = int(train_ratio * num_nodes_total)
         val_size = int(val_ratio * num_nodes_total)
 
