@@ -1,4 +1,8 @@
-# Hierarchical Knowledge Distillation for Heterogeneous Graph
+# Hierarchical Knowledg| Model | Parameters | Compression | Node Classification | Link Prediction |
+|-------|------------|-------------|-------------------|------------------|
+| Teacher | 100% | - | Baseline | Baseline |
+| Augmentation Expert | 100% | 0% | ~98% retention | ~97% retention |
+| Student | ~50% | 50% | ~95% retention | ~93% retention |tillation for Heterogeneous Graph
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.1.2](https://img.shields.io/badge/PyTorch-2.1.2-red.svg)](https://pytorch.org/)
@@ -7,14 +11,15 @@
 
 ## 📖 Overview
 
-This project implements a **Hierarchical Knowledge Distillation framework for Heterogeneous Graph Neural Networks**. The system uses a dual-teacher distillation pipeline where a main teacher and an augmentation expert guide a compressed student model to achieve efficient graph representation learning while maintaining competitive performance.
+This project implements a **Hierarchical Knowledge Distillation framework for Heterogeneous Graph Neural Networks**. The system uses a three-stage hierarchical pipeline (Teacher → Augmentation Expert → Student) where knowledge is progressively distilled through multiple levels. In the final stage, the student learns simultaneously from both teachers (dual-teacher learning) to achieve efficient graph representation learning while maintaining competitive performance.
 
 ### 🎯 Key Features
 
-- **Dual-Teacher Distillation**: Main Teacher + Augmentation Expert → Student pipeline
+- **Hierarchical Knowledge Distillation**: Three-stage progressive distillation pipeline
+- **Dual-Teacher Learning**: Student learns from both main teacher and augmentation expert simultaneously
 - **Meta-Path Augmentation**: Augmentation expert learns on graphs with structure-aware meta-path connections
 - **Heterogeneous Graph Support**: ACM, DBLP, AMiner, Freebase datasets
-- **Multi-Task Learning**: Node classification, link prediction, node clustering
+- **Multi-Task Learning**: Node classification, link prediction
 - **Model Compression**: 50% parameter reduction with minimal performance loss
 - **GPU Acceleration**: CUDA 11.8 support with PyTorch 2.1.2
 
@@ -165,7 +170,8 @@ bash 2_train_middle_teacher.sh
 ```bash
 bash 3_train_student.sh
 
-# Dual-teacher distillation:
+# Final stage of hierarchical distillation:
+# - Student learns from BOTH teachers simultaneously (dual-teacher learning)
 # - Main teacher provides knowledge distillation
 # - Augmentation expert provides robust guidance
 ```
@@ -206,10 +212,10 @@ python main.py --config code/experiments/configs/acm.yaml  # Future feature
 
 | Dataset | Nodes | Edges | Node Types | Tasks |
 |---------|-------|-------|------------|-------|
-| **ACM** | 4,019 papers<br>7,167 authors<br>60 subjects | PAP, PSP | Paper, Author, Subject | Classification, Link Prediction, Clustering |
-| **DBLP** | 4,057 papers<br>14,328 authors<br>7,723 conferences<br>20 terms | PAP, PCP, PTP | Paper, Author, Conference, Term | Classification, Link Prediction, Clustering |
-| **AMiner** | 6,564 papers<br>13,329 authors<br>35,890 references | PAP, PRP | Paper, Author, Reference | Classification, Link Prediction, Clustering |
-| **Freebase** | Multi-relational | Multiple | Multiple | Classification, Link Prediction, Clustering |
+| **ACM** | 4,019 papers<br>7,167 authors<br>60 subjects | PAP, PSP | Paper, Author, Subject | Classification, Link Prediction |
+| **DBLP** | 4,057 papers<br>14,328 authors<br>7,723 conferences<br>20 terms | PAP, PCP, PTP | Paper, Author, Conference, Term | Classification, Link Prediction |
+| **AMiner** | 6,564 papers<br>13,329 authors<br>35,890 references | PAP, PRP | Paper, Author, Reference | Classification, Link Prediction |
+| **Freebase** | Multi-relational | Multiple | Multiple | Classification, Link Prediction |
 
 ### Data Format
 

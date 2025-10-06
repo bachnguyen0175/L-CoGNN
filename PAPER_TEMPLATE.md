@@ -8,7 +8,7 @@
 
 ## Abstract
 
-This paper presents a novel hierarchical knowledge distillation framework for heterogeneous graph neural networks. We propose a dual-teacher distillation architecture where a main teacher model and an augmentation expert collaboratively guide a compressed student model. The augmentation expert, trained on augmented heterogeneous graphs, provides robust representations that enhance the student's ability to capture complex graph structures. Our approach achieves 50% parameter reduction while maintaining over 95% performance retention across multiple downstream tasks including node classification, link prediction, and node clustering. Extensive experiments on four benchmark datasets (ACM, DBLP, AMiner, Freebase) demonstrate the effectiveness of our method.
+This paper presents a novel hierarchical knowledge distillation framework for heterogeneous graph neural networks. We propose a three-stage progressive distillation pipeline where knowledge flows from teacher to augmentation expert to student. In the final stage, the student learns from both teachers simultaneously (dual-teacher learning), where a main teacher model and an augmentation expert collaboratively guide the compressed student model. The augmentation expert, trained on augmented heterogeneous graphs, provides robust representations that enhance the student's ability to capture complex graph structures. Our approach achieves 50% parameter reduction while maintaining over 95% performance retention across multiple downstream tasks including node classification and link prediction. Extensive experiments on four benchmark datasets (ACM, DBLP, AMiner, Freebase) demonstrate the effectiveness of our method.
 
 **Keywords**: Knowledge Distillation, Heterogeneous Graphs, Graph Neural Networks, Model Compression, Dual-Teacher Learning
 
@@ -27,9 +27,10 @@ Heterogeneous graphs, which contain multiple types of nodes and edges, are ubiqu
 - Difficulty in preserving multi-relational semantics
 
 **Our Contributions:**
-1. **Dual-Teacher Framework**: We propose a novel dual-teacher knowledge distillation architecture where:
-   - Main Teacher: Provides standard knowledge distillation
-   - Augmentation Expert: Learns on augmented graphs to provide robust guidance
+1. **Hierarchical Knowledge Distillation Framework**: We propose a novel three-stage progressive distillation pipeline:
+   - Stage 1: Train main teacher on original graphs
+   - Stage 2: Train augmentation expert on augmented graphs  
+   - Stage 3: Student learns from both teachers simultaneously (dual-teacher learning)
    
 2. **Augmentation-Guided Learning**: The augmentation expert trains on graph augmentations (node masking, meta-path connections) to learn robust representations that improve student generalization
 
@@ -49,7 +50,7 @@ Heterogeneous graphs, which contain multiple types of nodes and edges, are ubiqu
 **Objective**:
 Learn a compressed student model $f_S$ from teacher $f_T$ and augmentation expert $f_A$ such that:
 - $|f_S| \approx 0.5 \cdot |f_T|$ (50% compression)
-- Performance retention $\geq 95\%$ across tasks
+- Performance retention $\geq 95\%$ across node classification and link prediction tasks
 - Preserve heterogeneous structural information
 
 ---
@@ -104,10 +105,12 @@ Learn a compressed student model $f_S$ from teacher $f_T$ and augmentation exper
 2. Existing heterogeneous GNN compression lacks robust guidance
 3. Single-teacher distillation may not capture diverse graph patterns
 4. Limited exploration of augmentation in distillation process
+5. Lack of hierarchical progressive distillation for heterogeneous graphs
 
 **Our Solution**:
-- Dual-teacher framework specifically designed for heterogeneous graphs
-- Augmentation expert provides complementary robust guidance
+- Hierarchical knowledge distillation specifically designed for heterogeneous graphs
+- Three-stage progressive distillation with augmentation expert
+- Dual-teacher learning in final stage provides complementary guidance
 - Multi-level distillation preserves heterogeneous semantics
 
 ---
@@ -116,7 +119,7 @@ Learn a compressed student model $f_S$ from teacher $f_T$ and augmentation exper
 
 ### 3.1 Overall Framework
 
-**Three-Stage Pipeline**:
+**Hierarchical Three-Stage Pipeline**:
 
 ```
 Stage 1: Teacher Training
@@ -177,9 +180,9 @@ $$\mathcal{L}_{contrast} = -\log \frac{\exp(\text{sim}(z_{mp}, z_{sc}^+)/\tau)}{
 $$G_{mp} = \sigma(W_1 \cdot \text{ReLU}(W_2 \cdot z_{mp}^A))$$
 $$G_{sc} = \sigma(W_3 \cdot \text{ReLU}(W_4 \cdot z_{sc}^A))$$
 
-### 3.4 Student Model with Dual-Teacher Distillation
+### 3.4 Student Model with Hierarchical Dual-Teacher Learning
 
-**Compressed Architecture**:
+**Compressed Architecture** (Final Stage of Hierarchical Pipeline):
 - Feature projection: $\mathbb{R}^{d_{feat}} \rightarrow \mathbb{R}^{d/2}$
 - Meta-path encoder: $d/2$ hidden dimension
 - Schema encoder: $d/2$ hidden dimension
@@ -251,12 +254,12 @@ Output: Compressed student model f_S
 
 ### 4.1 Datasets
 
-| Dataset | Nodes | Node Types | Meta-Paths | Classes | Task |
-|---------|-------|-----------|------------|---------|------|
-| **ACM** | 4,019 papers<br>7,167 authors<br>60 subjects | 3 | PAP, PSP | 3 | Paper classification |
-| **DBLP** | 4,057 authors<br>14,328 papers<br>7,723 conferences<br>20 terms | 4 | APA, APCPA, APTPA | 4 | Author classification |
-| **AMiner** | 6,564 papers<br>13,329 authors<br>35,890 references | 3 | PAP, PRP | 4 | Paper classification |
-| **Freebase** | 3,492 movies<br>2,502 directors<br>33,401 actors<br>4,459 writers | 4 | MAM, MDM, MWM | 3 | Movie classification |
+| Dataset | Nodes | Node Types | Meta-Paths | Classes | Tasks |
+|---------|-------|-----------|------------|---------|-------|
+| **ACM** | 4,019 papers<br>7,167 authors<br>60 subjects | 3 | PAP, PSP | 3 | Classification, Link Prediction |
+| **DBLP** | 4,057 authors<br>14,328 papers<br>7,723 conferences<br>20 terms | 4 | APA, APCPA, APTPA | 4 | Classification, Link Prediction |
+| **AMiner** | 6,564 papers<br>13,329 authors<br>35,890 references | 3 | PAP, PRP | 4 | Classification, Link Prediction |
+| **Freebase** | 3,492 movies<br>2,502 directors<br>33,401 actors<br>4,459 writers | 4 | MAM, MDM, MWM | 3 | Classification, Link Prediction |
 
 **Data Splits**: 80% train, 10% validation, 10% test
 
@@ -316,12 +319,6 @@ Output: Compressed student model f_S
 - Average Precision (AP)
 - Hits@10, Hits@20, Hits@50
 
-**Node Clustering**:
-- Normalized Mutual Information (NMI)
-- Adjusted Rand Index (ARI)
-- Clustering Accuracy
-- Modularity
-
 **Model Efficiency**:
 - Parameter count
 - Memory usage (MB)
@@ -365,39 +362,26 @@ Output: Compressed student model f_S
 
 **Performance Retention**: 95.8% (Teacher → Student)
 
-### 5.3 Node Clustering Performance
+### 5.3 Ablation Study
 
-**Table 3: Node Clustering Results (NMI %)**
+**Table 3: Ablation Study on ACM Dataset**
 
-| Method | ACM | DBLP | AMiner | Freebase | Avg |
-|--------|-----|------|--------|----------|-----|
-| Teacher | 68.3 | 71.5 | 66.9 | 64.2 | 67.7 |
-| Standard KD | 61.2 | 64.1 | 59.8 | 57.3 | 60.6 |
-| Single-Teacher | 63.8 | 67.2 | 62.5 | 60.1 | 63.4 |
-| **Ours (Student)** | **65.1** | **68.7** | **64.2** | **61.8** | **65.0** |
-
-**Performance Retention**: 96.0% (Teacher → Student)
-
-### 5.4 Ablation Study
-
-**Table 4: Ablation Study on ACM Dataset**
-
-| Configuration | Accuracy | AUC | NMI | Params |
-|---------------|----------|-----|-----|--------|
-| Teacher only | 89.2 | 92.5 | 68.3 | 100% |
-| Student w/o distillation | 79.5 | 81.2 | 56.7 | 50% |
-| Student + Teacher KD | 84.2 | 87.1 | 63.8 | 50% |
-| Student + Aug Expert only | 83.8 | 86.8 | 63.2 | 50% |
-| **Student + Dual Teachers** | **85.1** | **88.4** | **65.1** | **50%** |
+| Configuration | Accuracy | AUC (Link) | Params |
+|---------------|----------|------------|--------|
+| Teacher only | 89.2 | 92.5 | 100% |
+| Student w/o distillation | 79.5 | 81.2 | 50% |
+| Student + Teacher KD | 84.2 | 87.1 | 50% |
+| Student + Aug Expert only | 83.8 | 86.8 | 50% |
+| **Student + Dual Teachers** | **85.1** | **88.4** | **50%** |
 
 **Key Findings**:
 - Dual-teacher approach outperforms single-teacher by 0.9-1.3%
 - Augmentation expert provides complementary robust guidance
 - Both teachers are necessary for optimal performance
 
-### 5.5 Impact of Augmentation Strategies
+### 5.4 Impact of Augmentation Strategies
 
-**Table 5: Effect of Meta-Path Connection Strength**
+**Table 4: Effect of Meta-Path Connection Strength**
 
 | Connection Strength (α) | Accuracy | Δ from baseline |
 |------------------------|----------|-----------------|
@@ -408,9 +392,9 @@ Output: Compressed student model f_S
 
 *Note: Only meta-path connections are used as augmentation strategy in this work.*
 
-### 5.6 Model Efficiency Analysis
+### 5.5 Model Efficiency Analysis
 
-**Table 6: Efficiency Comparison**
+**Table 5: Efficiency Comparison**
 
 | Model | Params | Memory (MB) | Inference (ms) | Speedup |
 |-------|--------|-------------|----------------|---------|
@@ -424,7 +408,7 @@ Output: Compressed student model f_S
 - 2× inference speedup
 - Minimal performance loss (< 5%)
 
-### 5.7 Visualization and Analysis
+### 5.6 Visualization and Analysis
 
 **Figure 1: t-SNE Visualization of Learned Embeddings**
 - Teacher embeddings show clear cluster separation
@@ -445,9 +429,15 @@ Output: Compressed student model f_S
 
 ## 6. Discussion
 
-### 6.1 Why Dual-Teacher Works
+### 6.1 Why Hierarchical Knowledge Distillation Works
 
-**Complementary Knowledge**:
+**Progressive Knowledge Transfer**:
+The hierarchical three-stage design enables:
+1. **Stage 1**: Teacher learns optimal representations on original graphs
+2. **Stage 2**: Augmentation expert learns robust patterns on augmented graphs
+3. **Stage 3**: Student benefits from both via dual-teacher learning
+
+**Complementary Knowledge in Dual-Teacher Learning**:
 - **Main Teacher**: Captures optimal representations on original graph
 - **Augmentation Expert**: Learns robust patterns invariant to perturbations
 - **Synergy**: Student benefits from both precise and robust guidance
@@ -469,9 +459,9 @@ Output: Compressed student model f_S
 - Cross-type interactions preserved through schema encoder
 - Heterogeneous semantics retained despite compression
 
-### 6.3 Comparison with Single-Teacher Distillation
+### 6.3 Comparison with Single-Stage and Single-Teacher Distillation
 
-**Advantages of Dual-Teacher**:
+**Advantages of Hierarchical Dual-Teacher Approach**:
 - +0.9% to +1.3% accuracy improvement
 - Better preservation of heterogeneous structure
 - More robust to graph variations
@@ -488,13 +478,13 @@ Output: Compressed student model f_S
 1. Augmentation expert has same size as teacher (no compression at this stage)
 2. Requires sequential training (teacher → expert → student)
 3. Fixed compression ratio (50%)
-4. Limited to node-level tasks
+4. Evaluation limited to node classification and link prediction tasks
 
 **Future Directions**:
 1. **Progressive Compression**: Compress augmentation expert as well
 2. **Dynamic Compression**: Adaptive compression ratios per layer
 3. **Multi-Teacher Ensemble**: Use multiple specialized experts
-4. **Graph-Level Tasks**: Extend to graph classification
+4. **Extended Tasks**: Explore graph classification and node clustering
 5. **Online Distillation**: Joint training of all models
 6. **Neural Architecture Search**: Automated student architecture design
 7. **Theoretical Analysis**: Formal bounds on compression-performance trade-off
@@ -506,17 +496,18 @@ Output: Compressed student model f_S
 This paper presents a novel hierarchical knowledge distillation framework for heterogeneous graph neural networks. Our dual-teacher approach, combining a main teacher and an augmentation expert, provides complementary guidance that enables effective model compression while preserving performance.
 
 **Key Contributions**:
-1. First dual-teacher distillation framework specifically designed for heterogeneous graphs
-2. Novel augmentation expert that learns robust representations on augmented graphs
-3. Multi-level distillation strategy preserving heterogeneous semantics
-4. Comprehensive evaluation showing 50% compression with 95%+ performance retention
+1. First **hierarchical knowledge distillation** framework specifically designed for heterogeneous graphs
+2. Novel three-stage progressive distillation pipeline with augmentation expert
+3. Dual-teacher learning mechanism in final stage for enhanced student training
+4. Multi-level distillation strategy preserving heterogeneous semantics
+5. Comprehensive evaluation showing 50% compression with 95%+ performance retention
 
 **Impact**:
 - Enables deployment of heterogeneous GNNs on resource-constrained devices
 - Maintains multi-relational reasoning capabilities in compressed models
 - Provides framework for future heterogeneous graph compression research
 
-Our method achieves state-of-the-art compression results on four benchmark datasets across three downstream tasks, demonstrating the effectiveness of augmentation-guided dual-teacher distillation for heterogeneous graphs.
+Our method achieves state-of-the-art compression results on four benchmark datasets across node classification and link prediction tasks, demonstrating the effectiveness of hierarchical knowledge distillation with dual-teacher learning for heterogeneous graphs.
 
 ---
 
