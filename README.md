@@ -12,7 +12,7 @@ This project implements a **Hierarchical Knowledge Distillation framework for He
 ### 🎯 Key Features
 
 - **Dual-Teacher Distillation**: Main Teacher + Augmentation Expert → Student pipeline
-- **Augmentation-Guided Learning**: Middle teacher learns on augmented graphs to provide robust guidance
+- **Meta-Path Augmentation**: Augmentation expert learns on graphs with structure-aware meta-path connections
 - **Heterogeneous Graph Support**: ACM, DBLP, AMiner, Freebase datasets
 - **Multi-Task Learning**: Node classification, link prediction, node clustering
 - **Model Compression**: 50% parameter reduction with minimal performance loss
@@ -77,9 +77,10 @@ bash 4_evaluate.sh             # ~5 minutes
 
 🎯 Model Architecture:
    Teacher: Full-size model (hidden_dim)
-   Augmentation Expert: Same size as teacher, learns on augmented graphs
+   Augmentation Expert: Same size as teacher, learns with meta-path connections
    Student: Compressed model (hidden_dim * 0.5)
    
+   Augmentation: Structure-aware meta-path connections only
    Overall: 50% parameter reduction
 ```
 
@@ -157,7 +158,7 @@ python pretrain_teacher.py acm \
 bash 2_train_middle_teacher.sh
 
 # This trains an augmentation expert (same size as teacher)
-# that learns on augmented heterogeneous graphs
+# that learns on graphs with structure-aware meta-path connections
 ```
 
 #### 3. Student Model Training
