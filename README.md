@@ -1,4 +1,4 @@
-# KD-HGRL: Knowledge Distillation for Heterogeneous Graph Representation Learning
+# Hierarchical Knowledge Distillation for Heterogeneous Graph
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.1.2](https://img.shields.io/badge/PyTorch-2.1.2-red.svg)](https://pytorch.org/)
@@ -7,14 +7,15 @@
 
 ## 📖 Overview
 
-KD-HGRL is a comprehensive framework for **Knowledge Distillation in Heterogeneous Graph Representation Learning**. This project implements a hierarchical distillation pipeline that progressively compresses large heterogeneous graph neural network models while maintaining competitive performance.
+This project implements a **Hierarchical Knowledge Distillation framework for Heterogeneous Graph Neural Networks**. The system uses a dual-teacher distillation pipeline where a main teacher and an augmentation expert guide a compressed student model to achieve efficient graph representation learning while maintaining competitive performance.
 
 ### 🎯 Key Features
 
-- **Hierarchical Knowledge Distillation**: Teacher → Middle Teacher → Student pipeline
+- **Dual-Teacher Distillation**: Main Teacher + Augmentation Expert → Student pipeline
+- **Augmentation-Guided Learning**: Middle teacher learns on augmented graphs to provide robust guidance
 - **Heterogeneous Graph Support**: ACM, DBLP, AMiner, Freebase datasets
 - **Multi-Task Learning**: Node classification, link prediction, node clustering
-- **Model Compression**: Up to 65% parameter reduction with minimal performance loss
+- **Model Compression**: 50% parameter reduction with minimal performance loss
 - **GPU Acceleration**: CUDA 11.8 support with PyTorch 2.1.2
 
 ### 🏆 Performance Highlights
@@ -22,8 +23,8 @@ KD-HGRL is a comprehensive framework for **Knowledge Distillation in Heterogeneo
 | Model | Parameters | Compression | Node Classification | Link Prediction | Node Clustering |
 |-------|------------|-------------|-------------------|-----------------|-----------------|
 | Teacher | 100% | - | Baseline | Baseline | Baseline |
-| Middle Teacher | ~70% | 30% | ~98% retention | ~97% retention | ~98% retention |
-| Student | ~35% | 65% | ~95% retention | ~93% retention | ~94% retention |
+| Augmentation Expert | 100% | 0% | ~98% retention | ~97% retention | ~98% retention |
+| Student | ~50% | 50% | ~95% retention | ~93% retention | ~94% retention |
 
 ## 🚀 Quick Start
 
@@ -70,14 +71,16 @@ bash 4_evaluate.sh             # ~5 minutes
 ✅ Complete pipeline completed successfully for acm!
 
 📁 Generated Models:
-   - teacher_heco_acm.pkl
-   - middle_teacher_heco_acm.pkl
-   - student_heco_acm.pkl
+   - teacher_heco_acm.pkl (Main Teacher)
+   - middle_teacher_heco_acm.pkl (Augmentation Expert)
+   - student_heco_acm.pkl (Compressed Student)
 
-🎯 Compression Analysis:
-   Teacher → Middle: ~30% compression
-   Middle → Student: ~50% compression
-   Overall: ~65% parameter reduction
+🎯 Model Architecture:
+   Teacher: Full-size model (hidden_dim)
+   Augmentation Expert: Same size as teacher, learns on augmented graphs
+   Student: Compressed model (hidden_dim * 0.5)
+   
+   Overall: 50% parameter reduction
 ```
 
 ## 📁 Project Structure
@@ -96,8 +99,8 @@ L-CoGNN/
 │
 ├── 🎓 code/training/               # Training Scripts
 │   ├── pretrain_teacher.py         # Stage 1: Teacher training
-│   ├── train_middle_teacher.py     # Stage 2: Middle teacher
-│   ├── train_student.py            # Stage 3: Student training
+│   ├── train_middle_teacher.py     # Stage 2: Augmentation expert
+│   ├── train_student.py            # Stage 3: Student training (dual-teacher distillation)
 │   └── hetero_augmentations.py     # Graph augmentations
 │
 ├── 📊 code/evaluation/             # Evaluation Tools
@@ -110,9 +113,9 @@ L-CoGNN/
 │   └── logreg.py                   # Logistic regression
 │
 ├── 🚀 code/scripts/                # Executable Scripts
-│   ├── 1_train_teacher.sh          # Teacher training
-│   ├── 2_train_middle_teacher.sh   # Middle teacher training
-│   ├── 3_train_student.sh          # Student training
+│   ├── 1_train_teacher.sh          # Main teacher training
+│   ├── 2_train_middle_teacher.sh   # Augmentation expert training
+│   ├── 3_train_student.sh          # Student training with dual-teacher guidance
 │   ├── 4_evaluate.sh               # Comprehensive evaluation
 │   └── run_all.sh                  # Complete pipeline
 │
@@ -149,18 +152,21 @@ python pretrain_teacher.py acm \
     --cuda
 ```
 
-#### 2. Middle Teacher Training
+#### 2. Augmentation Expert Training
 ```bash
 bash 2_train_middle_teacher.sh
 
-# Requires teacher model to exist first
+# This trains an augmentation expert (same size as teacher)
+# that learns on augmented heterogeneous graphs
 ```
 
 #### 3. Student Model Training
 ```bash
 bash 3_train_student.sh
 
-# Requires both teacher and middle teacher models
+# Dual-teacher distillation:
+# - Main teacher provides knowledge distillation
+# - Augmentation expert provides robust guidance
 ```
 
 ### Evaluation and Analysis
@@ -223,7 +229,8 @@ type_num: [4019, 7167, 60]  # Node counts per type
 nei_num: 2                   # Number of neighbor types
 
 model:
-  hidden_dim: 64             # Hidden dimension
+  hidden_dim: 64             # Hidden dimension for teacher & augmentation expert
+  student_dim: 32            # Student dimension (hidden_dim * 0.5)
   feat_drop: 0.3            # Feature dropout
   attn_drop: 0.5            # Attention dropout
   tau: 0.8                  # Temperature parameter
@@ -233,6 +240,15 @@ training:
     epochs: 10000           # Training epochs
     lr: 0.0008             # Learning rate
     patience: 50           # Early stopping patience
+    
+  augmentation_expert:
+    epochs: 500             # Training epochs on augmented graphs
+    lr: 0.001              # Learning rate
+    
+  student:
+    epochs: 2000           # Training epochs with dual-teacher guidance
+    lr: 0.001              # Learning rate
+    compression_ratio: 0.5  # 50% compression
 ```
 
 ### Hardware Requirements
@@ -277,8 +293,8 @@ flake8 code/
 
 ### Node Classification Results
 
-| Dataset | Teacher | Middle Teacher | Student | Retention |
-|---------|---------|----------------|---------|-----------|
+| Dataset | Teacher | Augmentation Expert | Student | Retention |
+|---------|---------|---------------------|---------|-----------|
 | ACM | 89.2% | 87.8% (-1.4%) | 85.1% (-4.1%) | 95.4% |
 | DBLP | 91.5% | 89.9% (-1.6%) | 87.2% (-4.3%) | 95.3% |
 | AMiner | 88.7% | 87.1% (-1.6%) | 84.8% (-3.9%) | 95.6% |
@@ -288,8 +304,10 @@ flake8 code/
 | Model | Parameters | Memory (MB) | Inference Time (ms) |
 |-------|------------|-------------|-------------------|
 | Teacher | 1.2M | 45.3 | 12.4 |
-| Middle Teacher | 840K | 31.8 | 8.7 |
-| Student | 420K | 15.9 | 4.2 |
+| Augmentation Expert | 1.2M | 45.3 | 12.4 |
+| Student | 600K | 22.7 | 6.2 |
+
+*Note: Augmentation Expert has same architecture as Teacher but learns on augmented graphs to provide robust guidance for student training.*
 
 
 ## 🤝 Contributing
@@ -324,8 +342,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 If you use this code in your research, please cite:
 
 ```bibtex
-@article{l_cognn2024,
-  title={L-CoGNN: Knowledge Distillation for Heterogeneous Graph Representation Learning},
+@article{hierarchical_kd_hetero_graph2024,
+  title={Hierarchical Knowledge Distillation for Heterogeneous Graph},
   author={Nguyen, Bach and Team},
   journal={arXiv preprint arXiv:2024.xxxxx},
   year={2024}
