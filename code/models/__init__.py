@@ -14,7 +14,7 @@ Available models:
 
 from .kd_heco import MyHeCo, AugmentationTeacher, StudentMyHeCo, DualTeacherKD, count_parameters, calculate_compression_ratio
 from .contrast import Contrast
-from .sc_encoder import Sc_encoder, inter_att, intra_att, mySc_encoder
+from .sc_encoder import inter_att, intra_att, mySc_encoder
 from .kd_params import kd_params, get_teacher_config, get_student_config, get_distillation_config
 
 __all__ = [
@@ -23,7 +23,7 @@ __all__ = [
     # Utilities
     'count_parameters', 'calculate_compression_ratio',
     # Components
-    'Contrast', 'Sc_encoder', 'inter_att', 'intra_att', 'mySc_encoder',
+    'Contrast', 'inter_att', 'intra_att', 'mySc_encoder',
     # Configuration
     'kd_params', 'get_teacher_config', 'get_student_config', 'get_distillation_config'
 ]

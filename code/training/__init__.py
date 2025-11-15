@@ -20,7 +20,7 @@ except ImportError:
     pass
 
 try:
-    from .train_middle_teacher import train_middle_teacher
+    from .train_middle_teacher import MiddleTeacherTrainer
 except ImportError:
     pass
 
@@ -30,5 +30,5 @@ except ImportError:
     pass
 
 __all__ = [
-    'TeacherTrainer', 'train_middle_teacher', 'StudentTrainer'
+    'TeacherTrainer', 'MiddleTeacherTrainer', 'StudentTrainer'
 ]

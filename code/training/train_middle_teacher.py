@@ -248,7 +248,7 @@ class MiddleTeacherTrainer:
             self.middle_teacher.load_state_dict(checkpoint)
         
         accuracy, macro_f1, micro_f1 = self.evaluate_downstream()
-        print(f"Final Results:")
+        print("Final Results:")
         print(f"  Accuracy: {accuracy:.4f}")
         print(f"  Macro F1: {macro_f1:.4f}")
         print(f"  Micro F1: {micro_f1:.4f}")
@@ -272,6 +272,26 @@ def main():
     np.random.seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)  # For multi-GPU
+        
+        # Deterministic behavior (note: may impact performance)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        
+        # Set environment variable for deterministic CuBLAS operations
+        import os
+        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+        
+        # Enable deterministic algorithms (PyTorch 1.8+)
+        try:
+            torch.use_deterministic_algorithms(True)
+        except AttributeError:
+            # Older PyTorch versions don't have this
+            pass
+        except RuntimeError as e:
+            # If deterministic algorithms cause issues, warn but continue
+            print(f"Warning: Could not enable full deterministic mode: {e}")
+            print("Training will continue with partial reproducibility (seeds + cudnn settings)")
     
     # Create trainer and start training
     trainer = MiddleTeacherTrainer(args)

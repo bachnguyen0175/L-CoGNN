@@ -260,29 +260,7 @@ def evaluate_link_prediction(embeddings, test_edges, test_edges_false, device='c
     auc_score = roc_auc_score(all_labels, all_scores)
     ap_score = average_precision_score(all_labels, all_scores)
 
-    # Calculate Hits@K
-    hits_at_k = {}
-    for k in [10, 50, 100]:
-        # Sort all edges by score (descending)
-        edge_list = []
-        for i, edge in enumerate(test_edges):
-            edge_list.append((pos_scores[i], 1, tuple(edge)))  # (score, label, edge)
-        for i, edge in enumerate(test_edges_false):
-            edge_list.append((neg_scores[i], 0, tuple(edge)))  # (score, label, edge)
-
-        # Sort by score (descending)
-        edge_list.sort(key=lambda x: x[0], reverse=True)
-
-        # Calculate Hits@K (FIXED: proper recall-based calculation)
-        if len(edge_list) >= k:
-            top_k_edges = edge_list[:k]
-            hits = sum([1 for score, label, edge in top_k_edges if label == 1])
-            # Hits@K should be recall: how many true positives found in top-K
-            hits_at_k[f'hits_at_{k}'] = hits / len(test_edges)
-        else:
-            hits_at_k[f'hits_at_{k}'] = 0.0
-
-    return auc_score, ap_score, hits_at_k
+    return auc_score, ap_score
 
 
 def generate_negative_edges(pos_edges, num_nodes, num_neg_edges: Optional[int] = None, seed: Optional[int] = None):
@@ -489,9 +467,11 @@ def calculate_modularity_from_embeddings(embeddings, cluster_labels, threshold=0
                 if i < j:  # Avoid double counting
                     internal_edges += adj_matrix[i, j]
 
-        # Expected internal edges
-        cluster_degree = np.sum(adj_matrix[cluster_nodes, :])
-        expected_internal = (cluster_degree ** 2) / (4 * m)
+        # Expected internal edges: sum of (k_i * k_j) / (2m) for all pairs in cluster
+        # Calculate degree for each node in cluster
+        degrees = np.sum(adj_matrix[cluster_nodes, :], axis=1)
+        # Expected edges = sum of all degree products divided by 2m
+        expected_internal = np.sum(np.outer(degrees, degrees)) / (4 * m)
 
         modularity += (internal_edges - expected_internal) / m
 
@@ -581,15 +561,23 @@ def evaluate_all_downstream_tasks(embeddings, labels, edges=None, num_nodes=None
             results['link_prediction'] = {
                 'auc': auc_score,
                 'ap': ap_score,
+                # Keep legacy Hits@K keys (precision@K)
                 'hits_at_10': hits_at_k.get('hits_at_10', 0),
                 'hits_at_50': hits_at_k.get('hits_at_50', 0),
-                'hits_at_100': hits_at_k.get('hits_at_100', 0)
+                'hits_at_100': hits_at_k.get('hits_at_100', 0),
+                # New explicit metrics
+                'precision_at_10': hits_at_k.get('precision_at_10', 0),
+                'precision_at_50': hits_at_k.get('precision_at_50', 0),
+                'precision_at_100': hits_at_k.get('precision_at_100', 0),
+                'recall_at_10': hits_at_k.get('recall_at_10', 0),
+                'recall_at_50': hits_at_k.get('recall_at_50', 0),
+                'recall_at_100': hits_at_k.get('recall_at_100', 0)
             }
             print(f"   ✓ AUC: {auc_score:.4f}")
             print(f"   ✓ AP: {ap_score:.4f}")
-            print(f"   ✓ Hits@10: {hits_at_k.get('hits_at_10', 0):.4f}")
-            print(f"   ✓ Hits@50: {hits_at_k.get('hits_at_50', 0):.4f}")
-            print(f"   ✓ Hits@100: {hits_at_k.get('hits_at_100', 0):.4f}")
+            print(f"   ✓ Precision@10: {hits_at_k.get('precision_at_10', 0):.4f}  | Recall@10: {hits_at_k.get('recall_at_10', 0):.4f}")
+            print(f"   ✓ Precision@50: {hits_at_k.get('precision_at_50', 0):.4f}  | Recall@50: {hits_at_k.get('recall_at_50', 0):.4f}")
+            print(f"   ✓ Precision@100: {hits_at_k.get('precision_at_100', 0):.4f} | Recall@100: {hits_at_k.get('recall_at_100', 0):.4f}")
 
         except Exception as e:
             print(f"   ✗ Link prediction failed: {e}")

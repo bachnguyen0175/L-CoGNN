@@ -1,0 +1,59 @@
+{
+  "dataset": "acm",
+  "timestamp": "2025-10-18 10:50:36",
+  "models": {
+    "teacher": {
+      "model_type": "teacher",
+      "total_parameters": 609794,
+      "trainable_parameters": 609794,
+      "embedding_dim": 64,
+      "node_classification": {
+        "accuracy": 0.8883374929428101,
+        "macro_f1": 0.883692861311029,
+        "micro_f1": 0.8883374689826302
+      },
+      "link_prediction": {
+        "auc": 0.8004343256571788,
+        "ap": 0.7799179126909407
+      }
+    },
+    "student": {
+      "model_type": "student",
+      "total_parameters": 300866,
+      "trainable_parameters": 300866,
+      "embedding_dim": 32,
+      "node_classification": {
+        "accuracy": 0.9106699824333191,
+        "macro_f1": 0.9070697047186494,
+        "micro_f1": 0.9106699751861043
+      },
+      "link_prediction": {
+        "auc": 0.855720922133569,
+        "ap": 0.8204750430179445
+      }
+    }
+  },
+  "comparison": {
+    "parameter_reduction": 0.5066104290957274,
+    "task_comparisons": {
+      "node_classification": {
+        "accuracy_retention": 1.0251396453126478,
+        "accuracy_forgetting": 0.0,
+        "macro_f1_retention": 1.0264535840800377,
+        "macro_f1_forgetting": 0.0,
+        "micro_f1_retention": 1.0251396648044695,
+        "micro_f1_forgetting": 0.0
+      },
+      "link_prediction": {
+        "auc_retention": 1.0690707465987275,
+        "auc_forgetting": 0.0,
+        "ap_retention": 1.0520017936080863,
+        "ap_forgetting": 0.0
+      }
+    },
+    "average_forget": 0.0,
+    "average_forget_percentage": 0.0,
+    "weighting_scheme": "node_classification: 50%, link_prediction: 50%",
+    "distillation_quality": "Excellent \u2728"
+  }
+}

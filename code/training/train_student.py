@@ -5,8 +5,6 @@ Stage 2 of hierarchical distillation: Middle Teacher → Student
 
 import os
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 import sys
 from tqdm.auto import tqdm
@@ -152,9 +150,6 @@ class StudentTrainer:
         # Prepare loss flags for student
         student_loss_flags = {
             'use_student_contrast_loss': self.args.use_student_contrast_loss,
-            'use_gate_entropy_loss': self.args.use_gate_entropy_loss,
-            'guidance_alignment_weight': self.args.guidance_alignment_weight,
-            'gate_entropy_weight': self.args.gate_entropy_weight
         }
         
         self.student = StudentMyHeCo(
@@ -181,20 +176,20 @@ class StudentTrainer:
         # Add KD framework parameters to optimizer if it has trainable parameters
         kd_params = list(self.kd_framework.parameters())
         if kd_params:
-            # Create new optimizer with both student and KD framework parameters
+            # Create optimizer with both student and KD framework parameters
             all_params = list(self.student.parameters()) + kd_params
             self.optimizer = torch.optim.Adam(
                 all_params, 
                 lr=self.args.lr, 
                 weight_decay=self.args.l2_coef
             )
-        
-        # Initialize optimizer
-        self.optimizer = torch.optim.Adam(
-            self.student.parameters(), 
-            lr=self.args.lr, 
-            weight_decay=self.args.l2_coef
-        )
+        else:
+            # Fallback: optimize student only
+            self.optimizer = torch.optim.Adam(
+                self.student.parameters(), 
+                lr=self.args.lr, 
+                weight_decay=self.args.l2_coef
+            )
         
         # Print model info
         if self.teacher:
@@ -223,14 +218,6 @@ class StudentTrainer:
             print("🔄 Augmentation Guidance Mode: Augmentation only")
         else:
             print("🎯 Self-Training Mode: No teacher guidance")
-        
-    def get_contrastive_nodes(self, batch_size=4096):
-        """Get random nodes for contrastive learning"""
-        total_nodes = self.feats[0].size(0)
-        if batch_size >= total_nodes:
-            return torch.arange(total_nodes, device=self.device)
-        else:
-            return torch.randperm(total_nodes, device=self.device)[:batch_size]
     
     def train_epoch(self, epoch=0):
         """Train for one epoch using enhanced dual-teacher framework with proper distillation"""
@@ -243,9 +230,6 @@ class StudentTrainer:
             self.middle_teacher.eval()
             
         self.optimizer.zero_grad()
-        
-        # Get contrastive nodes for this batch
-        contrastive_nodes = self.get_contrastive_nodes(batch_size=self.args.batch_size)
         
         # Get augmentation guidance from middle teacher (augmentation)
         augmentation_guidance = None
@@ -294,38 +278,14 @@ class StudentTrainer:
             else:
                 print("No distillation method found in KD framework.")
         
-        # 4. Subspace contrastive loss guided by augmentation patterns - CONTROLLED BY FLAG
-        subspace_loss = torch.tensor(0.0, device=self.device)
-        if self.args.use_subspace_loss and self.student.use_augmentation_teacher_guidance and augmentation_guidance:
-            from models.kd_heco import subspace_contrastive_loss_hetero
-            
-            # Get student representations
-            student_mp, student_sc = self.student.get_representations(
-                self.feats, self.mps, self.nei_index, augmentation_teacher_guidance
-            )
-            
-            # Extract masks from augmentation guidance if available
-            mp_masks = augmentation_guidance.get('mp_importance', None)
-            sc_masks = augmentation_guidance.get('sc_importance', None)
-            
-            if mp_masks is not None and sc_masks is not None:
-                subspace_loss = subspace_contrastive_loss_hetero(
-                    student_mp, student_sc, mp_masks, sc_masks,
-                    contrastive_nodes, temperature=1.0, weight=0.1
-                )
-        
         # 4.5. Link prediction losses for better edge modeling - CONTROLLED BY FLAGS
         link_recon_loss = torch.tensor(0.0, device=self.device)
-        relational_loss = torch.tensor(0.0, device=self.device)
-        
-        # Get student embeddings once for all advanced losses (avoid redundant computation)
         student_embeds = None
-        teacher_embeds = None
         
         # Link reconstruction loss on student embeddings - CONTROLLED BY FLAG
         if self.args.use_link_recon_loss and (epoch % 5 == 0 or epoch < 50):
             try:
-                from models.kd_heco import (link_reconstruction_loss, relational_kd_loss, 
+                from models.kd_heco import (link_reconstruction_loss,
                                             sample_edges_from_metapaths, sample_negative_edges)
 
                 # Get student embeddings (reuse if already computed)
@@ -354,36 +314,9 @@ class StudentTrainer:
             except Exception as e:
                 if epoch == 0 or epoch % 50 == 0:
                     print(f"⚠️ Warning: Link reconstruction error at epoch {epoch}: {e}")
-        
-        # Relational KD loss - preserve teacher's pairwise similarity structure - CONTROLLED BY FLAG
-        if self.args.use_relational_kd_loss and self.teacher and (epoch % 3 == 0 or epoch < 50):
-            try:
-                from models.kd_heco import relational_kd_loss
-                
-                # Get teacher embeddings (reuse if already computed)
-                if teacher_embeds is None:
-                    with torch.no_grad():
-                        teacher_embeds = self.teacher.get_embeds(self.feats, self.mps)
-                
-                # Get student embeddings (reuse if already computed)
-                if student_embeds is None:
-                    student_embeds = self.student.get_embeds(self.feats, self.mps, detach=False)
-                
-                # Sample nodes for efficiency
-                num_sample_nodes = min(512, student_embeds.size(0))
-                sample_node_indices = torch.randperm(student_embeds.size(0))[:num_sample_nodes].to(self.device)
-                
-                # Compute relational KD loss
-                relational_loss = relational_kd_loss(
-                    teacher_embeds, student_embeds, 
-                    sampled_nodes=sample_node_indices,
-                    temperature=2.0
-                )
-            except Exception as e:
-                if epoch == 0 or epoch % 50 == 0:
-                    print(f"⚠️ Warning: Relational KD error at epoch {epoch}: {e}")
     
         total_loss = 0
+        # giải thích phần này
         total_loss += student_loss
         
         # Role assignment:
@@ -391,129 +324,28 @@ class StudentTrainer:
         # - Middle teacher: Augmentation guidance (structural hints from augmented data)
         if self.teacher and self.middle_teacher:
             # Main teacher: Primary knowledge distillation (full weight)
-            main_kd_weight = self.args.stage2_distill_weight
+            main_kd_weight = self.args.main_distill_weight
             augmentation_guidance_weight = self.args.augmentation_weight
             
             total_loss += main_kd_weight * kd_loss  # Main teacher KD
             total_loss += augmentation_guidance_weight * augmentation_alignment_loss  # Augmentation guidance from middle teacher
 
         elif self.teacher:
-            total_loss += self.args.stage2_distill_weight * kd_loss
+            total_loss += self.args.main_distill_weight * kd_loss
             
         elif self.middle_teacher:
             total_loss += self.args.augmentation_weight * augmentation_alignment_loss
-
-        if subspace_loss > 0:
-            total_loss += self.args.subspace_weight * subspace_loss
         
         # Link reconstruction loss for explicit edge modeling
         if link_recon_loss > 0:
             total_loss += self.args.link_recon_weight * link_recon_loss
-        
-        # Relational KD loss for preserving pairwise similarities
-        if relational_loss > 0:
-            total_loss += self.args.relational_kd_weight * relational_loss
-        
-        # Apply periodically to avoid overhead
-        advanced_losses = {}
-        
-        # Multi-hop link prediction (every 3 epochs)
-        if self.args.use_multihop_link_loss and (epoch % 3 == 0 or epoch < 30):
-            try:
-                from models.kd_heco import multi_hop_link_prediction_loss
-                # Ensure student_embeds is computed
-                if student_embeds is None:
-                    student_embeds = self.student.get_embeds(self.feats, self.mps, detach=False)
-                multihop_loss = multi_hop_link_prediction_loss(
-                    student_embeds, self.mps, 
-                    num_samples=1000, 
-                    max_hops=self.args.max_hops,
-                    temperature=1.0
-                )
-                total_loss += self.args.multihop_weight * multihop_loss
-                advanced_losses['multihop'] = multihop_loss.item()
-            except Exception as e:
-                if epoch == 0:
-                    print(f"⚠️ Multi-hop loss disabled: {e}")
-                advanced_losses['multihop'] = 0.0
-        else:
-            advanced_losses['multihop'] = 0.0
-        
-        # Meta-path specific link loss (every 4 epochs)
-        if self.args.use_metapath_specific_loss and (epoch % 4 == 0 or epoch < 30):
-            try:
-                from models.kd_heco import metapath_specific_link_loss
-                # Ensure student_embeds is computed
-                if student_embeds is None:
-                    student_embeds = self.student.get_embeds(self.feats, self.mps, detach=False)
-                metapath_loss = metapath_specific_link_loss(
-                    student_embeds, self.mps,
-                    num_samples_per_path=500,
-                    temperature=1.0
-                )
-                total_loss += self.args.metapath_specific_weight * metapath_loss
-                advanced_losses['metapath'] = metapath_loss.item()
-            except Exception as e:
-                if epoch == 0:
-                    print(f"⚠️ Meta-path specific loss disabled: {e}")
-                advanced_losses['metapath'] = 0.0
-        else:
-            advanced_losses['metapath'] = 0.0
-        
-        # Structural distance preservation (every 2 epochs)
-        if self.args.use_structural_distance and (epoch % 2 == 0):
-            try:
-                from models.kd_heco import structural_distance_preservation_loss
-                # Ensure embeddings are computed
-                if teacher_embeds is None and self.teacher:
-                    with torch.no_grad():
-                        teacher_embeds = self.teacher.get_embeds(self.feats, self.mps)
-                if student_embeds is None:
-                    student_embeds = self.student.get_embeds(self.feats, self.mps, detach=False)
-                struct_dist_loss = structural_distance_preservation_loss(
-                    teacher_embeds, student_embeds,
-                    sampled_nodes=None,
-                    temperature=1.5
-                )
-                total_loss += self.args.structural_distance_weight * struct_dist_loss
-                advanced_losses['struct_dist'] = struct_dist_loss.item()
-            except Exception as e:
-                if epoch == 0:
-                    print(f"⚠️ Structural distance loss disabled: {e}")
-                advanced_losses['struct_dist'] = 0.0
-        else:
-            advanced_losses['struct_dist'] = 0.0
-        
-        # Attention transfer (every 5 epochs)
-        if self.args.use_attention_transfer and (epoch % 5 == 0 or epoch < 30):
-            try:
-                from models.kd_heco import attention_transfer_loss
-                # Ensure embeddings are computed
-                if teacher_embeds is None and self.teacher:
-                    with torch.no_grad():
-                        teacher_embeds = self.teacher.get_embeds(self.feats, self.mps)
-                if student_embeds is None:
-                    student_embeds = self.student.get_embeds(self.feats, self.mps, detach=False)
-                att_transfer_loss = attention_transfer_loss(
-                    teacher_embeds, student_embeds,
-                    power=2
-                )
-                total_loss += self.args.attention_transfer_weight * att_transfer_loss
-                advanced_losses['attention'] = att_transfer_loss.item()
-            except Exception as e:
-                if epoch == 0:
-                    print(f"⚠️ Attention transfer loss disabled: {e}")
-                advanced_losses['attention'] = 0.0
-        else:
-            advanced_losses['attention'] = 0.0
-        
+
         # Backward pass
         total_loss.backward()
         self.optimizer.step()
         
         return (total_loss.item(), student_loss.item(), kd_loss.item(), 
-                augmentation_alignment_loss.item(), subspace_loss.item(), 
-                link_recon_loss.item(), relational_loss.item(), advanced_losses)
+                augmentation_alignment_loss.item(), link_recon_loss.item())
     
     def validate(self):
         """Validate the model"""
@@ -576,9 +408,9 @@ class StudentTrainer:
             # Epoch-level NumPy seeding for reproducibility of any np-based sampling
             np.random.seed(self.args.seed + epoch)
             loss_tuple = self.train_epoch(epoch=epoch)
-            
-            total_loss, student_loss, kd_loss, augmentation_alignment_loss, subspace_loss, link_recon_loss, relational_loss, advanced_losses = loss_tuple
-            
+
+            total_loss, student_loss, kd_loss, augmentation_alignment_loss, link_recon_loss = loss_tuple
+
             # Validation step
             val_loss = self.validate()
             
@@ -592,24 +424,11 @@ class StudentTrainer:
                 'student': f"{student_loss:.4f}",
                 'main_kd': f"{kd_loss:.4f}",  # Main teacher knowledge distillation
                 'augmentation_align': f"{augmentation_alignment_loss:.4f}",  # Augmentation alignment
-                'subspace': f"{subspace_loss:.4f}",
                 'link_rec': f"{link_recon_loss:.4f}",  # Link reconstruction
-                'relation': f"{relational_loss:.4f}",  # Relational KD
                 'val': f"{val_loss:.4f}",
                 'best': f"{self.best_loss:.4f}",
                 'patience': f"{self.patience_counter}/{self.args.patience}"
-            }
-            
-            # Add advanced losses to progress bar when active
-            if advanced_losses:
-                if advanced_losses.get('multihop', 0) > 0:
-                    postfix_dict['multihop'] = f"{advanced_losses['multihop']:.4f}"
-                if advanced_losses.get('metapath', 0) > 0:
-                    postfix_dict['metapath'] = f"{advanced_losses['metapath']:.4f}"
-                if advanced_losses.get('struct_dist', 0) > 0:
-                    postfix_dict['struct'] = f"{advanced_losses['struct_dist']:.4f}"
-                if advanced_losses.get('attention', 0) > 0:
-                    postfix_dict['attn'] = f"{advanced_losses['attention']:.4f}"
+            }         
             
             # Add evaluation metrics when available
             if epoch % self.args.eval_interval == 0 and epoch > 0:
@@ -653,7 +472,7 @@ class StudentTrainer:
             self.student.load_state_dict(checkpoint)
         
         accuracy, macro_f1, micro_f1 = self.evaluate_downstream()
-        print(f"Final Results:")
+        print("Final Results:")
         print(f"  Accuracy: {accuracy:.4f}")
         print(f"  Macro F1: {macro_f1:.4f}")
         print(f"  Micro F1: {micro_f1:.4f}")
@@ -676,6 +495,26 @@ def main():
     np.random.seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)  # For multi-GPU
+        
+        # Deterministic behavior (note: may impact performance)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        
+        # Set environment variable for deterministic CuBLAS operations
+        import os
+        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+        
+        # Enable deterministic algorithms (PyTorch 1.8+)
+        try:
+            torch.use_deterministic_algorithms(True)
+        except AttributeError:
+            # Older PyTorch versions don't have this
+            pass
+        except RuntimeError as e:
+            # If deterministic algorithms cause issues, warn but continue
+            print(f"Warning: Could not enable full deterministic mode: {e}")
+            print("Training will continue with partial reproducibility (seeds + cudnn settings)")
     
     # Create trainer and start training
     trainer = StudentTrainer(args)

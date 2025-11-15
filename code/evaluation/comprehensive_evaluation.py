@@ -27,7 +27,6 @@ from utils.load_data import load_data
 from utils.evaluate import (
     evaluate_node_classification,
     evaluate_link_prediction,
-    evaluate_node_clustering,
     generate_negative_edges,
     split_edges_for_link_prediction
 )
@@ -287,23 +286,17 @@ class ComprehensiveEvaluator:
                 train_edges, val_edges, test_edges = split_edges_for_link_prediction(self.edges)
                 test_neg_edges = generate_negative_edges(test_edges, self.num_nodes)
 
-                auc_score, ap_score, hits_at_k = evaluate_link_prediction(
+                auc_score, ap_score = evaluate_link_prediction(
                     embeddings, test_edges, test_neg_edges, self.device
                 )
 
                 model_results['link_prediction'] = {
                     'auc': float(auc_score),
                     'ap': float(ap_score),
-                    'hits_at_10': float(hits_at_k.get('hits_at_10', 0)),
-                    'hits_at_50': float(hits_at_k.get('hits_at_50', 0)),
-                    'hits_at_100': float(hits_at_k.get('hits_at_100', 0))
                 }
 
                 print(f"   ✓ AUC: {auc_score:.4f}")
                 print(f"   ✓ AP: {ap_score:.4f}")
-                print(f"   ✓ Hits@10: {hits_at_k.get('hits_at_10', 0):.4f}")
-                print(f"   ✓ Hits@50: {hits_at_k.get('hits_at_50', 0):.4f}")
-                print(f"   ✓ Hits@100: {hits_at_k.get('hits_at_100', 0):.4f}")
 
             except Exception as e:
                 print(f"   ✗ Failed: {e}")
