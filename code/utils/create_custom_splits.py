@@ -13,7 +13,6 @@ Usage:
 import numpy as np
 import argparse
 import os
-from sklearn.model_selection import train_test_split
 from collections import Counter
 import sys
 

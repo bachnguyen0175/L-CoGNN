@@ -1,8 +1,4 @@
-# Hierarchical Knowledg| Model | Parameters | Compression | Node Classification | Link Prediction |
-|-------|------------|-------------|-------------------|------------------|
-| Teacher | 100% | - | Baseline | Baseline |
-| Augmentation Expert | 100% | 0% | ~98% retention | ~97% retention |
-| Student | ~50% | 50% | ~95% retention | ~93% retention |tillation for Heterogeneous Graph
+# KD-HGRL: Knowledge Distillation for Heterogeneous Graph Representation Learning
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.1.2](https://img.shields.io/badge/PyTorch-2.1.2-red.svg)](https://pytorch.org/)
@@ -11,27 +7,103 @@
 
 ## 📖 Overview
 
-This project implements a **Hierarchical Knowledge Distillation framework for Heterogeneous Graph Neural Networks**. The system uses a three-stage hierarchical pipeline (Teacher → Augmentation Expert → Student) where knowledge is progressively distilled through multiple levels. In the final stage, the student learns simultaneously from both teachers (dual-teacher learning) to achieve efficient graph representation learning while maintaining competitive performance.
+KD-HGRL is a comprehensive framework for **Knowledge Distillation in Heterogeneous Graph Representation Learning**. This project implements a **dual-teacher distillation architecture** that combines knowledge distillation with augmentation-based robustness learning to create compressed, efficient heterogeneous graph neural network models while maintaining competitive performance.
 
 ### 🎯 Key Features
 
-- **Hierarchical Knowledge Distillation**: Three-stage progressive distillation pipeline
-- **Dual-Teacher Learning**: Student learns from both main teacher and augmentation expert simultaneously
-- **Meta-Path Augmentation**: Augmentation expert learns on graphs with structure-aware meta-path connections
+- **Dual-Teacher Architecture**: 
+  - **Main Teacher**: Provides knowledge distillation from original graph data
+  - **Augmentation Teacher**: Provides robustness guidance from augmented graph data
+  - **Student**: Learns from both teachers with 50% parameter compression
 - **Heterogeneous Graph Support**: ACM, DBLP, AMiner, Freebase datasets
-- **Multi-Task Learning**: Node classification, link prediction
-- **Model Compression**: 50% parameter reduction with minimal performance loss
+- **Multi-View Learning**: Meta-path encoder + Schema-level encoder
+- **Advanced Augmentation**: Structure-aware heterogeneous graph augmentation
+- **Multi-Task Evaluation**: Node classification, link prediction, node clustering
+- **Model Compression**: 50% parameter reduction with ~95% performance retention
 - **GPU Acceleration**: CUDA 11.8 support with PyTorch 2.1.2
+- **Modular Loss Components**: Configurable KD loss, augmentation alignment, link reconstruction
 
 ### 🏆 Performance Highlights
 
 | Model | Parameters | Compression | Node Classification | Link Prediction | Node Clustering |
 |-------|------------|-------------|-------------------|-----------------|-----------------|
 | Teacher | 100% | - | Baseline | Baseline | Baseline |
-| Augmentation Expert | 100% | 0% | ~98% retention | ~97% retention | ~98% retention |
+| Middle Teacher | 100% | No compression* | ~98% retention | ~97% retention | ~98% retention |
 | Student | ~50% | 50% | ~95% retention | ~93% retention | ~94% retention |
 
-## 🚀 Quick Start
+\* *Middle teacher uses same architecture as teacher but trains on augmented data for robustness guidance*
+
+## � How It Works: Dual-Teacher Architecture
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                   DUAL-TEACHER FRAMEWORK                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌─────────────────┐         ┌──────────────────┐              │
+│  │  Original Graph │         │  Augmented Graph  │              │
+│  │  - PAP, PSP     │         │  - Feature mask   │              │
+│  │  - Clean data   │         │  - Edge perturb   │              │
+│  └────────┬────────┘         └────────┬─────────┘              │
+│           │                           │                         │
+│           ▼                           ▼                         │
+│  ┌─────────────────┐         ┌──────────────────┐              │
+│  │  Main Teacher   │         │ Augmentation     │              │
+│  │  (100% params)  │         │ Teacher          │              │
+│  │                 │         │ (100% params)    │              │
+│  │  - Meta-path    │         │                  │              │
+│  │  - Schema view  │         │ - Robust         │              │
+│  │  - Contrastive  │         │   patterns       │              │
+│  └────────┬────────┘         └────────┬─────────┘              │
+│           │                           │                         │
+│           │ KD Loss                   │ Augmentation            │
+│           │ (knowledge)               │ Alignment               │
+│           │                           │ (robustness)            │
+│           └─────────┬─────────────────┘                         │
+│                     │                                           │
+│                     ▼                                           │
+│           ┌──────────────────┐                                  │
+│           │  Student Model   │                                  │
+│           │  (50% params)    │                                  │
+│           │                  │                                  │
+│           │  - Compressed    │                                  │
+│           │  - Fast          │                                  │
+│           │  - Robust        │                                  │
+│           └──────────────────┘                                  │
+│                                                                  │
+│  Loss = Student_Loss + α·KD_Loss + β·Aug_Align + γ·Link_Loss   │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Key Innovations
+
+1. **Independent Teacher Training**: Both teachers train independently
+   - Main teacher learns from clean data
+   - Augmentation teacher learns from augmented data
+   - No hierarchical dependency
+
+2. **Dual-Source Knowledge Transfer**: Student learns from both
+   - **Knowledge Distillation** (Main Teacher): Transferring learned representations
+   - **Augmentation Alignment** (Aug Teacher): Learning robust patterns
+   - **Self-Learning**: Student's own contrastive loss
+
+3. **Multi-Loss Training**:
+   ```python
+   Total Loss = student_contrastive_loss 
+              + main_distill_weight * kd_loss          # from main teacher
+              + augmentation_weight * alignment_loss    # from aug teacher  
+              + link_recon_weight * link_loss          # optional, edge modeling
+   ```
+
+4. **Heterogeneous Graph Augmentation**:
+   - Feature masking (random node feature dropout)
+   - Edge perturbation (meta-path sampling variations)
+   - Structure-aware augmentation (preserving heterogeneity)
+
+## �🚀 Quick Start
 
 ### Prerequisites
 
@@ -64,29 +136,68 @@ cd code/scripts
 bash run_all.sh acm
 
 # Option 2: Run individual stages
-bash 1_train_teacher.sh        # ~30-60 minutes
-bash 2_train_middle_teacher.sh # ~15-30 minutes  
-bash 3_train_student.sh        # ~20-40 minutes
-bash 4_evaluate.sh             # ~5 minutes
+bash 1_train_teacher.sh        # Stage 1: Train main teacher (~30-60 min)
+bash 2_train_middle_teacher.sh # Stage 2: Train augmentation teacher (~15-30 min)
+bash 3_train_student.sh        # Stage 3: Train student with dual teachers (~20-40 min)
+bash 4_evaluate.sh             # Stage 4: Comprehensive evaluation (~5 min)
 ```
 
-### 3. Expected Output
+### 3. Training Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Training Pipeline                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Stage 1: Main Teacher                                      │
+│  ┌──────────────────────┐                                  │
+│  │  Original Graph      │ ──► Main Teacher (100%)          │
+│  │  - PAP, PSP paths    │     - Knowledge distillation     │
+│  │  - Contrastive loss  │     - Clean representations      │
+│  └──────────────────────┘                                  │
+│                                                             │
+│  Stage 2: Augmentation Teacher (Independent)                │
+│  ┌──────────────────────┐                                  │
+│  │  Augmented Graphs    │ ──► Augmentation Teacher (100%)  │
+│  │  - Structure masking │     - Robustness guidance        │
+│  │  - Feature dropout   │     - Augmentation patterns      │
+│  └──────────────────────┘                                  │
+│                                                             │
+│  Stage 3: Student (Dual-Teacher Learning)                   │
+│  ┌──────────────────────────────────────────────┐          │
+│  │         Main Teacher (frozen)                 │          │
+│  │               ↓ KD Loss                       │          │
+│  │         Student Model (50%)  ←───────────────┼──────┐   │
+│  │               ↑ Augmentation                 │      │   │
+│  │               ↑ Alignment Loss                │      │   │
+│  │   Augmentation Teacher (frozen)               │      │   │
+│  │                                               │      │   │
+│  │   + Student Contrastive Loss                  │      │   │
+│  │   + Link Reconstruction Loss (optional)       │      │   │
+│  └──────────────────────────────────────────────┘      │   │
+│                                                         │   │
+│  Total Loss = Student Loss                              │   │
+│             + main_distill_weight * KD Loss             │   │
+│             + augmentation_weight * Alignment Loss      │   │
+│             + link_recon_weight * Link Loss             │   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 4. Expected Output
 
 ```
 ✅ Complete pipeline completed successfully for acm!
 
 📁 Generated Models:
-   - teacher_heco_acm.pkl (Main Teacher)
-   - middle_teacher_heco_acm.pkl (Augmentation Expert)
-   - student_heco_acm.pkl (Compressed Student)
+   - teacher_heco_acm.pkl          (1.2M params, baseline)
+   - middle_teacher_heco_acm.pkl   (1.2M params, augmentation expert)
+   - student_heco_acm.pkl          (600K params, 50% compressed)
 
-🎯 Model Architecture:
-   Teacher: Full-size model (hidden_dim)
-   Augmentation Expert: Same size as teacher, learns with meta-path connections
-   Student: Compressed model (hidden_dim * 0.5)
-   
-   Augmentation: Structure-aware meta-path connections only
-   Overall: 50% parameter reduction
+🎯 Model Comparison:
+   Main Teacher:        100% parameters, Baseline performance
+   Augmentation Teacher: 100% parameters (same architecture, different data)
+   Student:             50% parameters, ~95% performance retention
 ```
 
 ## 📁 Project Structure
@@ -98,43 +209,51 @@ L-CoGNN/
 ├── 🐍 main.py                      # Entry point (future CLI)
 │
 ├── 🧠 code/models/                 # Neural Network Models
-│   ├── kd_heco.py                  # Main HeCo architecture
-│   ├── contrast.py                 # Contrastive learning
-│   ├── sc_encoder.py               # Semantic attention encoder
-│   └── kd_params.py                # Model configurations
+│   ├── kd_heco.py                  # Core architectures
+│   │   ├── MyHeCo                  # Main teacher model
+│   │   ├── AugmentationTeacher     # Augmentation teacher (same size)
+│   │   ├── StudentMyHeCo           # Compressed student (50%)
+│   │   └── DualTeacherKD           # KD framework coordinator
+│   ├── contrast.py                 # Contrastive learning module
+│   ├── sc_encoder.py               # Schema-level attention encoder
+│   └── kd_params.py                # Model & training configurations
 │
 ├── 🎓 code/training/               # Training Scripts
-│   ├── pretrain_teacher.py         # Stage 1: Teacher training
-│   ├── train_middle_teacher.py     # Stage 2: Augmentation expert
-│   ├── train_student.py            # Stage 3: Student training (dual-teacher distillation)
-│   └── hetero_augmentations.py     # Graph augmentations
+│   ├── pretrain_teacher.py         # Stage 1: Main teacher
+│   ├── train_middle_teacher.py     # Stage 2: Augmentation teacher
+│   ├── train_student.py            # Stage 3: Dual-teacher student
+│   └── hetero_augmentations.py     # Graph augmentation techniques
 │
 ├── 📊 code/evaluation/             # Evaluation Tools
 │   ├── comprehensive_evaluation.py # Multi-task evaluation
-│   └── evaluate_kd.py              # KD-specific evaluation
+│   └── evaluate_kd.py              # KD-specific metrics
 │
 ├── 🔧 code/utils/                  # Utility Functions
-│   ├── load_data.py                # Data loading utilities
+│   ├── load_data.py                # Data loading
 │   ├── evaluate.py                 # Evaluation metrics
 │   └── logreg.py                   # Logistic regression
 │
-├── 🚀 code/scripts/                # Executable Scripts
-│   ├── 1_train_teacher.sh          # Main teacher training
-│   ├── 2_train_middle_teacher.sh   # Augmentation expert training
-│   ├── 3_train_student.sh          # Student training with dual-teacher guidance
+├── 🚀 code/scripts/                # Shell Scripts
+│   ├── 1_train_teacher.sh          # Train main teacher
+│   ├── 2_train_middle_teacher.sh   # Train augmentation teacher
+│   ├── 3_train_student.sh          # Train student (dual-teacher)
 │   ├── 4_evaluate.sh               # Comprehensive evaluation
 │   └── run_all.sh                  # Complete pipeline
 │
 ├── 🧪 code/experiments/            # Experiment Configurations
-│   └── configs/                    # YAML configuration files
-│       ├── acm.yaml                # ACM dataset config
-│       └── dblp.yaml               # DBLP dataset config
+│   ├── configs/                    # YAML configurations
+│   └── ablation/                   # Ablation studies
 │
-├── 📚 data/                        # Dataset Files
+├── 📁 data/                        # Datasets
 │   ├── acm/                        # ACM dataset
 │   ├── dblp/                       # DBLP dataset
 │   ├── aminer/                     # AMiner dataset
 │   └── freebase/                   # Freebase dataset
+│
+├── 📈 results/                     # Model Checkpoints
+│   ├── teacher_heco_*.pkl          # Main teacher (100%)
+│   ├── middle_teacher_heco_*.pkl   # Augmentation teacher (100%)
+│   └── student_heco_*.pkl          # Student (50%)
 │
 └── 🧪 code/tests/                  # Unit Tests
     └── test_imports.py             # Import validation
@@ -144,7 +263,7 @@ L-CoGNN/
 
 ### Training Individual Models
 
-#### 1. Teacher Model Training
+#### 1. Main Teacher Training (Stage 1)
 ```bash
 cd code/scripts
 bash 1_train_teacher.sh
@@ -155,56 +274,97 @@ python pretrain_teacher.py acm \
     --hidden_dim=64 \
     --nb_epochs=1000 \
     --lr=0.0008 \
-    --cuda
+    --gpu 0
 ```
 
-#### 2. Augmentation Expert Training
+**What happens**: Trains the main teacher on original graph data using contrastive learning.
+
+#### 2. Augmentation Teacher Training (Stage 2)
 ```bash
 bash 2_train_middle_teacher.sh
 
-# This trains an augmentation expert (same size as teacher)
-# that learns on graphs with structure-aware meta-path connections
+# Or with custom parameters
+cd code/training
+python train_middle_teacher.py acm \
+    --hidden_dim=64 \
+    --nb_epochs=100 \
+    --lr=0.0008 \
+    --gpu 0
 ```
 
-#### 3. Student Model Training
+**What happens**: Trains augmentation teacher independently on augmented graphs. **No compression** - same architecture as main teacher but learns robust patterns from data augmentation.
+
+#### 3. Student Training with Dual Teachers (Stage 3)
 ```bash
 bash 3_train_student.sh
 
-# Final stage of hierarchical distillation:
-# - Student learns from BOTH teachers simultaneously (dual-teacher learning)
-# - Main teacher provides knowledge distillation
-# - Augmentation expert provides robust guidance
+# Or with custom parameters
+cd code/training
+python train_student.py acm \
+    --teacher_model_path ../../results/teacher_heco_acm.pkl \
+    --middle_teacher_path ../../results/middle_teacher_heco_acm.pkl \
+    --student_compression_ratio=0.5 \
+    --stage2_epochs=100 \
+    --lr=0.0008 \
+    --gpu 0
 ```
+
+**What happens**: 
+- Loads **both frozen teachers** (main + augmentation)
+- Trains compressed student (50% parameters) with:
+  - **KD Loss**: Learn from main teacher's representations
+  - **Augmentation Alignment**: Learn robustness from augmentation teacher
+  - **Student Contrastive Loss**: Self-supervised learning
+  - **Link Reconstruction** (optional): Explicit edge modeling
 
 ### Evaluation and Analysis
 
-#### Comprehensive Evaluation
+#### Comprehensive Multi-Task Evaluation
 ```bash
 bash 4_evaluate.sh
 
 # Or directly:
-python evaluation/comprehensive_evaluation.py \
+cd code/evaluation
+python comprehensive_evaluation.py \
     --dataset acm \
-    --teacher_path teacher_heco_acm.pkl \
-    --student_path student_heco_acm.pkl
+    --teacher_path ../../results/teacher_heco_acm.pkl \
+    --middle_teacher_path ../../results/middle_teacher_heco_acm.pkl \
+    --student_path ../../results/student_heco_acm.pkl
 ```
 
-#### KD-Specific Evaluation
+**Evaluates**:
+- ✅ Node Classification (Macro-F1, Micro-F1, Accuracy)
+- ✅ Link Prediction (AUC, AP)
+- ✅ Node Clustering (NMI, ARI)
+- ✅ Model Compression Metrics
+- ✅ Inference Speed Comparison
+
+#### KD-Specific Metrics
 ```bash
-python evaluation/evaluate_kd.py \
+cd code/evaluation
+python evaluate_kd.py \
     --dataset acm \
-    --teacher_model_path teacher_heco_acm.pkl \
-    --student_model_path student_heco_acm.pkl
+    --teacher_model_path ../../results/teacher_heco_acm.pkl \
+    --student_model_path ../../results/student_heco_acm.pkl
 ```
 
-### Configuration-Based Training
+**Analyzes**:
+- Knowledge transfer quality
+- Representation similarity
+- Layer-wise distillation effectiveness
 
-Use YAML configuration files for reproducible experiments:
+### Key Training Parameters
 
-```bash
-# Example: ACM dataset configuration
-python main.py --config code/experiments/configs/acm.yaml  # Future feature
-```
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--student_compression_ratio` | 0.5 | Student size relative to teacher (0.5 = 50%) |
+| `--main_distill_weight` | 1.0 | Weight for main teacher KD loss |
+| `--augmentation_weight` | 0.5 | Weight for augmentation alignment |
+| `--link_recon_weight` | 0.1 | Weight for link reconstruction |
+| `--use_kd_loss` | True | Enable/disable KD from main teacher |
+| `--use_augmentation_alignment_loss` | True | Enable/disable augmentation guidance |
+| `--use_link_recon_loss` | False | Enable/disable link reconstruction |
+| `--use_student_contrast_loss` | True | Enable/disable student self-learning |
 
 ## 📊 Datasets
 
@@ -212,10 +372,10 @@ python main.py --config code/experiments/configs/acm.yaml  # Future feature
 
 | Dataset | Nodes | Edges | Node Types | Tasks |
 |---------|-------|-------|------------|-------|
-| **ACM** | 4,019 papers<br>7,167 authors<br>60 subjects | PAP, PSP | Paper, Author, Subject | Classification, Link Prediction |
-| **DBLP** | 4,057 papers<br>14,328 authors<br>7,723 conferences<br>20 terms | PAP, PCP, PTP | Paper, Author, Conference, Term | Classification, Link Prediction |
-| **AMiner** | 6,564 papers<br>13,329 authors<br>35,890 references | PAP, PRP | Paper, Author, Reference | Classification, Link Prediction |
-| **Freebase** | Multi-relational | Multiple | Multiple | Classification, Link Prediction |
+| **ACM** | 4,019 papers<br>7,167 authors<br>60 subjects | PAP, PSP | Paper, Author, Subject | Classification, Link Prediction, Clustering |
+| **DBLP** | 4,057 papers<br>14,328 authors<br>7,723 conferences<br>20 terms | PAP, PCP, PTP | Paper, Author, Conference, Term | Classification, Link Prediction, Clustering |
+| **AMiner** | 6,564 papers<br>13,329 authors<br>35,890 references | PAP, PRP | Paper, Author, Reference | Classification, Link Prediction, Clustering |
+| **Freebase** | Multi-relational | Multiple | Multiple | Classification, Link Prediction, Clustering |
 
 ### Data Format
 
@@ -227,35 +387,44 @@ Each dataset contains:
 
 ## ⚙️ Configuration
 
-### Model Parameters
+### Model Architecture Configuration
 
 ```yaml
 # Example: ACM dataset configuration
 dataset: acm
 type_num: [4019, 7167, 60]  # Node counts per type
-nei_num: 2                   # Number of neighbor types
+nei_num: 2                   # Number of neighbor types (for schema encoder)
 
 model:
-  hidden_dim: 64             # Hidden dimension for teacher & augmentation expert
-  student_dim: 32            # Student dimension (hidden_dim * 0.5)
+  hidden_dim: 64             # Hidden dimension for teacher & augmentation teacher
+  student_compression_ratio: 0.5  # Student = 32 dim (50% of 64)
   feat_drop: 0.3            # Feature dropout
   attn_drop: 0.5            # Attention dropout
-  tau: 0.8                  # Temperature parameter
+  tau: 0.8                  # Temperature for contrastive learning
+  lam: 0.5                  # Balance parameter for contrastive loss
 
 training:
   teacher:
-    epochs: 10000           # Training epochs
+    epochs: 1000            # Main teacher training epochs
     lr: 0.0008             # Learning rate
     patience: 50           # Early stopping patience
     
-  augmentation_expert:
-    epochs: 500             # Training epochs on augmented graphs
-    lr: 0.001              # Learning rate
+  middle_teacher:
+    epochs: 100            # Augmentation teacher epochs
+    lr: 0.0008
+    patience: 30
     
   student:
-    epochs: 2000           # Training epochs with dual-teacher guidance
-    lr: 0.001              # Learning rate
-    compression_ratio: 0.5  # 50% compression
+    epochs: 100            # Student training epochs
+    lr: 0.0008
+    main_distill_weight: 1.0      # KD loss weight
+    augmentation_weight: 0.5      # Augmentation alignment weight
+    link_recon_weight: 0.1        # Link reconstruction weight (optional)
+    
+augmentation:
+  feature_masking: 0.2     # Feature masking ratio
+  edge_perturbation: 0.1   # Edge perturbation ratio
+  metapath_sampling: True  # Enable metapath-based augmentation
 ```
 
 ### Hardware Requirements
@@ -300,21 +469,19 @@ flake8 code/
 
 ### Node Classification Results
 
-| Dataset | Teacher | Augmentation Expert | Student | Retention |
-|---------|---------|---------------------|---------|-----------|
+| Dataset | Teacher | Middle Teacher | Student | Retention |
+|---------|---------|----------------|---------|-----------|
 | ACM | 89.2% | 87.8% (-1.4%) | 85.1% (-4.1%) | 95.4% |
 | DBLP | 91.5% | 89.9% (-1.6%) | 87.2% (-4.3%) | 95.3% |
 | AMiner | 88.7% | 87.1% (-1.6%) | 84.8% (-3.9%) | 95.6% |
 
 ### Model Size Comparison
 
-| Model | Parameters | Memory (MB) | Inference Time (ms) |
-|-------|------------|-------------|-------------------|
-| Teacher | 1.2M | 45.3 | 12.4 |
-| Augmentation Expert | 1.2M | 45.3 | 12.4 |
-| Student | 600K | 22.7 | 6.2 |
-
-*Note: Augmentation Expert has same architecture as Teacher but learns on augmented graphs to provide robust guidance for student training.*
+| Model | Parameters | Memory (MB) | Inference Time (ms) | Role |
+|-------|------------|-------------|---------------------|------|
+| Teacher | 1.2M | 45.3 | 12.4 | Main knowledge source (trained on original data) |
+| Middle Teacher | 1.2M | 45.3 | 12.4 | Augmentation expert (trained on augmented data) |
+| Student | 600K | 22.7 | 6.2 | Compressed model (50% reduction) |
 
 
 ## 🤝 Contributing
@@ -349,8 +516,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 If you use this code in your research, please cite:
 
 ```bibtex
-@article{hierarchical_kd_hetero_graph2024,
-  title={Hierarchical Knowledge Distillation for Heterogeneous Graph},
+@article{l_cognn2024,
+  title={L-CoGNN: Knowledge Distillation for Heterogeneous Graph Representation Learning},
   author={Nguyen, Bach and Team},
   journal={arXiv preprint arXiv:2024.xxxxx},
   year={2024}

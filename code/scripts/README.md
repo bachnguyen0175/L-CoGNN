@@ -26,18 +26,18 @@ bash 4_evaluate.sh           # Stage 4: Evaluation
 - **GPU**: Required for optimal performance
 
 ### **2_train_middle_teacher.sh** 
-- **Purpose**: Train middle teacher via knowledge distillation from teacher
-- **Input**: Teacher model checkpoint
+- **Purpose**: Train middle teacher (augmentation expert) on augmented graphs
+- **Input**: None (trains independently, no teacher needed)
 - **Output**: `middle_teacher_heco_acm.pkl`
 - **Time**: ~15-30 minutes
-- **Compression**: ~30% parameter reduction
+- **Compression**: No compression (same size as teacher, different training data)
 
 ### **3_train_student.sh**
-- **Purpose**: Train student model via hierarchical distillation  
+- **Purpose**: Train student model via dual-teacher distillation  
 - **Input**: Teacher + Middle teacher checkpoints
 - **Output**: `student_heco_acm.pkl`
 - **Time**: ~20-40 minutes
-- **Compression**: ~50% additional reduction (~65% total)
+- **Compression**: ~50% parameter reduction (compressed student model)
 
 ### **4_evaluate.sh**
 - **Purpose**: Comprehensive evaluation on all three downstream tasks
@@ -60,11 +60,11 @@ bash 4_evaluate.sh           # Stage 4: Evaluation
 
 ## 📊 Expected Results
 
-| Model | Parameters | Performance | Compression |
-|-------|------------|-------------|-------------|
-| Teacher | 100% | Baseline | - |  
-| Middle Teacher | ~70% | ~95% retention | 30% |
-| Student | ~35% | ~90% retention | 65% |
+| Model | Parameters | Performance | Compression | Role |
+|-------|------------|-------------|-------------|------|
+| Teacher | 100% | Baseline | - | Knowledge source (original data) |
+| Middle Teacher | 100% | ~98% retention | No compression | Augmentation expert (augmented data) |
+| Student | ~50% | ~95% retention | 50% reduction | Compressed final model |
 
 ## 🚨 Troubleshooting
 
