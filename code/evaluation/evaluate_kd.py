@@ -25,20 +25,6 @@ class ModelEvaluator:
         self.args = args
         self.device = torch.device(f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu')
         
-        # Set dataset-specific parameters
-        if args.dataset == "acm":
-            args.type_num = [4019, 7167, 60]  # [paper, author, subject]
-            args.nei_num = 2
-        elif args.dataset == "dblp":
-            args.type_num = [4057, 14328, 7723, 20]  # [paper, author, conference, term]
-            args.nei_num = 3
-        elif args.dataset == "aminer":
-            args.type_num = [6564, 13329, 35890]  # [paper, author, reference]
-            args.nei_num = 2
-        elif args.dataset == "freebase":
-            args.type_num = [3492, 2502, 33401, 4459]  # [movie, director, actor, writer]
-            args.nei_num = 3
-
         # Load data
         print(f"Loading {args.dataset} dataset...")
         self.nei_index, self.feats, self.mps, self.pos, self.label, self.idx_train, self.idx_val, self.idx_test = load_data(args.dataset, args.ratio, args.type_num)
@@ -252,7 +238,7 @@ class ModelEvaluator:
         student = results['student']
         
         # Model statistics
-        print(f"\n📊 MODEL STATISTICS")
+        print(f"\nMODEL STATISTICS")
         print("-" * 40)
         print(f"{'Metric':<25} {'Teacher':<15} {'Student':<15} {'Ratio':<10}")
         print("-" * 65)
@@ -261,7 +247,7 @@ class ModelEvaluator:
         print(f"{'Size Reduction':<25} {'0.0%':<15} {(1-student['compression_ratio'])*100:<14.1f}% {'-':<10}")
         
         # Performance comparison
-        print(f"\n📈 PERFORMANCE COMPARISON")
+        print(f"\nPERFORMANCE COMPARISON")
         print("-" * 40)
         print(f"{'Metric':<25} {'Teacher':<15} {'Student':<15} {'Retention':<10}")
         print("-" * 65)
@@ -274,7 +260,7 @@ class ModelEvaluator:
         print(f"{'Micro F1':<25} {t_perf['micro_f1']:<15.4f} {s_perf['micro_f1']:<15.4f} {s_perf['micro_f1']/t_perf['micro_f1']:<10.3f}")
         
         # Speed and efficiency
-        print(f"\n⚡ EFFICIENCY COMPARISON")
+        print(f"\nEFFICIENCY COMPARISON")
         print("-" * 40)
         print(f"{'Metric':<25} {'Teacher':<15} {'Student':<15} {'Speedup':<10}")
         print("-" * 65)
@@ -290,16 +276,16 @@ class ModelEvaluator:
         perf_retention = (s_perf['accuracy'] / t_perf['accuracy']) * 100
         speed_improvement = teacher['inference_speed'] / student['inference_speed']
         
-        print(f"✅ Parameter Reduction: {param_reduction:.1f}%")
-        print(f"✅ Performance Retention: {perf_retention:.1f}%")
-        print(f"✅ Speed Improvement: {speed_improvement:.1f}x")
+        print(f"Parameter Reduction: {param_reduction:.1f}%")
+        print(f"Performance Retention: {perf_retention:.1f}%")
+        print(f"Speed Improvement: {speed_improvement:.1f}x")
 
         if perf_retention > 90:
-            print("🎉 Excellent knowledge distillation! Student retains >90% of teacher performance.")
+            print("Excellent knowledge distillation! Student retains >90% of teacher performance.")
         elif perf_retention > 80:
-            print("👍 Good knowledge distillation! Student retains >80% of teacher performance.")
+            print("Good knowledge distillation! Student retains >80% of teacher performance.")
         else:
-            print("⚠️  Consider adjusting distillation parameters to improve student performance.")
+            print("Consider adjusting distillation parameters to improve student performance.")
 
     def run_all_downstream_tasks_evaluation(self):
         """Run comprehensive evaluation on all three downstream tasks"""
@@ -341,7 +327,7 @@ class ModelEvaluator:
 
         # Evaluate student model
         if self.args.student_model_path and os.path.exists(self.args.student_model_path):
-            print(f"\n🔍 Evaluating Student Model on All Tasks...")
+            print(f"\nEvaluating Student Model on All Tasks...")
             student_model, compression_ratio = self.load_student_model(self.args.student_model_path)
 
             # Get embeddings
@@ -371,7 +357,7 @@ class ModelEvaluator:
             s_nc = student_results['node_classification']
 
             if 'error' not in t_nc and 'error' not in s_nc:
-                print(f"\n📊 NODE CLASSIFICATION")
+                print(f"\nNODE CLASSIFICATION")
                 print("-" * 40)
                 print(f"{'Metric':<15} {'Teacher':<12} {'Student':<12} {'Retention':<12}")
                 print("-" * 52)
@@ -385,7 +371,7 @@ class ModelEvaluator:
             s_lp = student_results['link_prediction']
 
             if 'error' not in t_lp and 'error' not in s_lp and 'skipped' not in t_lp:
-                print(f"\n🔗 LINK PREDICTION")
+                print(f"\nLINK PREDICTION")
                 print("-" * 40)
                 print(f"{'Metric':<15} {'Teacher':<12} {'Student':<12} {'Retention':<12}")
                 print("-" * 52)
@@ -399,7 +385,7 @@ class ModelEvaluator:
             s_cl = student_results['node_clustering']
 
             if 'error' not in t_cl and 'error' not in s_cl:
-                print(f"\n🎯 NODE CLUSTERING")
+                print(f"\nNODE CLUSTERING")
                 print("-" * 40)
                 print(f"{'Metric':<15} {'Teacher':<12} {'Student':<12} {'Retention':<12}")
                 print("-" * 52)
@@ -413,20 +399,6 @@ class ModelEvaluator:
 
 def main():    
     args = kd_params()
-    
-    # Set dataset-specific parameters
-    if args.dataset == "acm":
-        args.type_num = [4019, 7167, 60]
-        args.nei_num = 2
-    elif args.dataset == "dblp":
-        args.type_num = [4057, 14328, 7723, 20]
-        args.nei_num = 3
-    elif args.dataset == "aminer":
-        args.type_num = [6564, 13329, 35890]
-        args.nei_num = 2
-    elif args.dataset == "freebase":
-        args.type_num = [3492, 2502, 33401, 4459]
-        args.nei_num = 3
     
     # Run evaluation
     evaluator = ModelEvaluator(args)

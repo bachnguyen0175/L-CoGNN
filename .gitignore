@@ -1,38 +1,187 @@
-# Python-generated files
+# ============================================
+# Python
+# ============================================
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+*.so
+.Python
 build/
+develop-eggs/
 dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
 wheels/
-*.egg-info
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# Virtual environments
-.venv
+# ============================================
+# Virtual Environments
+# ============================================
+.venv/
+venv/
+ENV/
+env/
+.virtualenv/
 
-# Heavy model files and data
+# ============================================
+# IDEs and Editors
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# ============================================
+# Jupyter Notebook
+# ============================================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+.jupyter/
+
+# ============================================
+# Model Files (Heavy)
+# ============================================
 *.pkl
-*.pkl_
+*.pth
+*.pt
+*.h5
+*.hdf5
+*.ckpt
+*.pb
+*.onnx
 *_epoch_*.pkl
+*.pkl_
+
+# ============================================
+# Data Files (Heavy)
+# ============================================
 *.npz
 *.npy
-
-# Large CUDA installer
-*.run
-
-# Jupyter notebook checkpoints
-.ipynb_checkpoints/
-
-# Large data files
+*.mat
 *.coo
-*.png
-weighted_graph_values.txt
+*.csv.gz
+*.jsonl.gz
 
-# Results and output files
-result_*.txt
-node_classification_results_*.npz
-
-# Uncomment the line below to ignore the entire data folder
-# data/
+# Data directories
 data/**/*.npz
 data/**/*.npy  
 data/**/*.pkl
+data/**/*.pt
+data/**/*.pth
+data/**/cache/
+
+# ============================================
+# Results and Outputs
+# ============================================
+results/**/*.pkl
+results/**/*.pth
+results/**/*.npz
+results/**/*.png
+results/**/*.jpg
+results/**/*.pdf
+result_*.txt
+node_classification_results_*.npz
+*_results.json
+*_metrics.csv
+weighted_graph_values.txt
+
+# But keep directory structure
+!results/**/README.md
+!results/**/.gitkeep
+
+# ============================================
+# Logs and Temp Files
+# ============================================
+*.log
+*.out
+*.err
+logs/
+*.tmp
+*.temp
+*.bak
+*.swp
+nohup.out
+
+# ============================================
+# Large Installers
+# ============================================
+*.run
+*.deb
+*.rpm
+*.dmg
+*.exe
+*.msi
+
+# ============================================
+# System Files
+# ============================================
+.DS_Store
+Thumbs.db
+desktop.ini
+*.lnk
+
+# ============================================
+# Documentation Build
+# ============================================
+docs/_build/
+docs/_static/
+docs/_templates/
+site/
+
+# ============================================
+# Testing and Coverage
+# ============================================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ============================================
+# ML/DL Specific
+# ============================================
+wandb/
+mlruns/
+.tensorboard/
+tensorboard_logs/
+checkpoints/
+saved_models/
+experiments/runs/
+
+# ============================================
+# Package Management
+# ============================================
+uv.lock
+poetry.lock
+Pipfile.lock
+.pdm.toml
+
+# ============================================
+# Environment Variables
+# ============================================
+.env
+.env.local
+.env.*.local
+
+# ============================================
+# Misc
+# ============================================
+*.zip
+*.tar.gz
+*.rar
+*.7z

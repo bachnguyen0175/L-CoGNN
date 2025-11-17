@@ -1,0 +1,74 @@
+{
+  "dataset": "acm",
+  "timestamp": "2025-11-16 20:36:53",
+  "models": {
+    "teacher": {
+      "model_type": "teacher",
+      "total_parameters": 609794,
+      "trainable_parameters": 609794,
+      "embedding_dim": 64,
+      "node_classification": {
+        "accuracy": 0.8883374333381653,
+        "macro_f1": 0.8814230703439826,
+        "micro_f1": 0.8883374689826302
+      },
+      "link_prediction": {
+        "auc": 0.8121650984757558,
+        "ap": 0.7841265127897648
+      }
+    },
+    "student": {
+      "model_type": "student",
+      "total_parameters": 309188,
+      "trainable_parameters": 309188,
+      "embedding_dim": 32,
+      "node_classification": {
+        "accuracy": 0.8808932900428772,
+        "macro_f1": 0.8737339161443988,
+        "micro_f1": 0.8808933002481389
+      },
+      "link_prediction": {
+        "auc": 0.7485052953650786,
+        "ap": 0.7367655035011053
+      }
+    },
+    "middle_teacher": {
+      "model_type": "middle_teacher",
+      "total_parameters": 15574625,
+      "trainable_parameters": 15574625,
+      "embedding_dim": 64,
+      "node_classification": {
+        "accuracy": 0.9156327247619629,
+        "macro_f1": 0.913775921157638,
+        "micro_f1": 0.9156327543424317
+      },
+      "link_prediction": {
+        "auc": 0.8302353841083078,
+        "ap": 0.8061903757983748
+      }
+    }
+  },
+  "comparison": {
+    "parameter_reduction": 0.49296319740764916,
+    "task_comparisons": {
+      "node_classification": {
+        "accuracy_retention": 0.9916201400324709,
+        "accuracy_forgetting": 0.00837985996752915,
+        "macro_f1_retention": 0.9912764318767116,
+        "macro_f1_forgetting": 0.00872356812328848,
+        "micro_f1_retention": 0.9916201117318436,
+        "micro_f1_forgetting": 0.00837988826815638
+      },
+      "link_prediction": {
+        "auc_retention": 0.9216171647487047,
+        "auc_forgetting": 0.07838283525129532,
+        "ap_retention": 0.9396002959775477,
+        "ap_forgetting": 0.06039970402245236
+      }
+    },
+    "average_forget": 0.03285317112654433,
+    "average_forget_percentage": 3.285317112654433,
+    "weighting_scheme": "node_classification: 50%, link_prediction: 50%",
+    "distillation_quality": "Good"
+  }
+}

@@ -260,29 +260,7 @@ def evaluate_link_prediction(embeddings, test_edges, test_edges_false, device='c
     auc_score = roc_auc_score(all_labels, all_scores)
     ap_score = average_precision_score(all_labels, all_scores)
 
-    # Calculate Hits@K
-    hits_at_k = {}
-    for k in [10, 50, 100]:
-        # Sort all edges by score (descending)
-        edge_list = []
-        for i, edge in enumerate(test_edges):
-            edge_list.append((pos_scores[i], 1, tuple(edge)))  # (score, label, edge)
-        for i, edge in enumerate(test_edges_false):
-            edge_list.append((neg_scores[i], 0, tuple(edge)))  # (score, label, edge)
-
-        # Sort by score (descending)
-        edge_list.sort(key=lambda x: x[0], reverse=True)
-
-        # Calculate Hits@K (FIXED: proper recall-based calculation)
-        if len(edge_list) >= k:
-            top_k_edges = edge_list[:k]
-            hits = sum([1 for score, label, edge in top_k_edges if label == 1])
-            # Hits@K should be recall: how many true positives found in top-K
-            hits_at_k[f'hits_at_{k}'] = hits / len(test_edges)
-        else:
-            hits_at_k[f'hits_at_{k}'] = 0.0
-
-    return auc_score, ap_score, hits_at_k
+    return auc_score, ap_score
 
 
 def generate_negative_edges(pos_edges, num_nodes, num_neg_edges: Optional[int] = None, seed: Optional[int] = None):
@@ -351,104 +329,6 @@ def split_edges_for_link_prediction(edges, test_ratio=0.1, val_ratio=0.1):
     return train_edges, val_edges, test_edges
 
 
-def evaluate_node_clustering(embeddings, true_labels, n_clusters, device='cpu', n_runs=10):
-    """
-    Evaluate node clustering performance using NMI, ARI, and Modularity
-
-    Args:
-        embeddings: Node embeddings [num_nodes, embedding_dim]
-        true_labels: Ground truth cluster labels [num_nodes]
-        n_clusters: Number of clusters to use
-        device: Device to run evaluation on
-        n_runs: Number of runs for averaging (K-means is non-deterministic)
-
-    Returns:
-        nmi_score: Normalized Mutual Information score
-        ari_score: Adjusted Rand Index score
-        modularity_score: Modularity score
-        cluster_accuracy: Clustering accuracy (best label matching)
-    """
-    # Move to CPU for sklearn compatibility
-    if torch.is_tensor(embeddings):
-        embeddings = embeddings.cpu().numpy()
-    if torch.is_tensor(true_labels):
-        true_labels = true_labels.cpu().numpy()
-
-    # If true_labels are one-hot encoded, convert to class indices
-    if len(true_labels.shape) > 1:
-        true_labels = np.argmax(true_labels, axis=1)
-
-    nmi_scores = []
-    ari_scores = []
-    cluster_accuracies = []
-
-    for run in range(n_runs):
-        # Perform K-means clustering
-        kmeans = KMeans(n_clusters=n_clusters, random_state=run, n_init=10)
-        predicted_labels = kmeans.fit_predict(embeddings)
-
-        # Calculate NMI and ARI
-        nmi = normalized_mutual_info_score(true_labels, predicted_labels)
-        ari = adjusted_rand_score(true_labels, predicted_labels)
-
-        nmi_scores.append(nmi)
-        ari_scores.append(ari)
-
-        # Calculate clustering accuracy using Hungarian algorithm (best label matching)
-        cluster_acc = cluster_accuracy(true_labels, predicted_labels, n_clusters)
-        cluster_accuracies.append(cluster_acc)
-
-    # Calculate modularity (using the best clustering result)
-    best_run = np.argmax(nmi_scores)
-    kmeans_best = KMeans(n_clusters=n_clusters, random_state=best_run, n_init=10)
-    best_predicted_labels = kmeans_best.fit_predict(embeddings)
-
-    # For modularity, we need the adjacency matrix - we'll estimate it from embeddings
-    modularity_score = calculate_modularity_from_embeddings(embeddings, best_predicted_labels)
-
-    return {
-        'nmi': np.mean(nmi_scores),
-        'nmi_std': np.std(nmi_scores),
-        'ari': np.mean(ari_scores),
-        'ari_std': np.std(ari_scores),
-        'accuracy': np.mean(cluster_accuracies),
-        'accuracy_std': np.std(cluster_accuracies),
-        'modularity': modularity_score
-    }
-
-
-def cluster_accuracy(true_labels, predicted_labels, n_clusters):
-    """
-    Calculate clustering accuracy using Hungarian algorithm for best label matching
-
-    Args:
-        true_labels: Ground truth labels
-        predicted_labels: Predicted cluster labels
-        n_clusters: Number of clusters
-
-    Returns:
-        accuracy: Best possible accuracy after optimal label matching
-    """
-    from scipy.optimize import linear_sum_assignment
-
-    # Remap labels to contiguous 0..C-1 to avoid indexing issues
-    tl_unique, tl_inv = np.unique(true_labels, return_inverse=True)
-    pl_unique, pl_inv = np.unique(predicted_labels, return_inverse=True)
-    # Create confusion matrix
-    confusion_matrix = np.zeros((n_clusters, n_clusters))
-    for i in range(len(true_labels)):
-        confusion_matrix[tl_inv[i], pl_inv[i]] += 1
-
-    # Use Hungarian algorithm to find optimal label matching
-    row_indices, col_indices = linear_sum_assignment(-confusion_matrix)
-
-    # Calculate accuracy with optimal matching
-    total_correct = confusion_matrix[row_indices, col_indices].sum()
-    accuracy = total_correct / len(true_labels)
-
-    return accuracy
-
-
 def calculate_modularity_from_embeddings(embeddings, cluster_labels, threshold=0.5):
     """
     Calculate modularity score using embedding similarity as edge weights
@@ -489,9 +369,11 @@ def calculate_modularity_from_embeddings(embeddings, cluster_labels, threshold=0
                 if i < j:  # Avoid double counting
                     internal_edges += adj_matrix[i, j]
 
-        # Expected internal edges
-        cluster_degree = np.sum(adj_matrix[cluster_nodes, :])
-        expected_internal = (cluster_degree ** 2) / (4 * m)
+        # Expected internal edges: sum of (k_i * k_j) / (2m) for all pairs in cluster
+        # Calculate degree for each node in cluster
+        degrees = np.sum(adj_matrix[cluster_nodes, :], axis=1)
+        # Expected edges = sum of all degree products divided by 2m
+        expected_internal = np.sum(np.outer(degrees, degrees)) / (4 * m)
 
         modularity += (internal_edges - expected_internal) / m
 
@@ -581,45 +463,30 @@ def evaluate_all_downstream_tasks(embeddings, labels, edges=None, num_nodes=None
             results['link_prediction'] = {
                 'auc': auc_score,
                 'ap': ap_score,
+                # Keep legacy Hits@K keys (precision@K)
                 'hits_at_10': hits_at_k.get('hits_at_10', 0),
                 'hits_at_50': hits_at_k.get('hits_at_50', 0),
-                'hits_at_100': hits_at_k.get('hits_at_100', 0)
+                'hits_at_100': hits_at_k.get('hits_at_100', 0),
+                # New explicit metrics
+                'precision_at_10': hits_at_k.get('precision_at_10', 0),
+                'precision_at_50': hits_at_k.get('precision_at_50', 0),
+                'precision_at_100': hits_at_k.get('precision_at_100', 0),
+                'recall_at_10': hits_at_k.get('recall_at_10', 0),
+                'recall_at_50': hits_at_k.get('recall_at_50', 0),
+                'recall_at_100': hits_at_k.get('recall_at_100', 0)
             }
-            print(f"   ✓ AUC: {auc_score:.4f}")
-            print(f"   ✓ AP: {ap_score:.4f}")
-            print(f"   ✓ Hits@10: {hits_at_k.get('hits_at_10', 0):.4f}")
-            print(f"   ✓ Hits@50: {hits_at_k.get('hits_at_50', 0):.4f}")
-            print(f"   ✓ Hits@100: {hits_at_k.get('hits_at_100', 0):.4f}")
+            print(f"   AUC: {auc_score:.4f}")
+            print(f"   AP: {ap_score:.4f}")
+            print(f"   Precision@10: {hits_at_k.get('precision_at_10', 0):.4f}  | Recall@10: {hits_at_k.get('recall_at_10', 0):.4f}")
+            print(f"   Precision@50: {hits_at_k.get('precision_at_50', 0):.4f}  | Recall@50: {hits_at_k.get('recall_at_50', 0):.4f}")
+            print(f"   Precision@100: {hits_at_k.get('precision_at_100', 0):.4f} | Recall@100: {hits_at_k.get('recall_at_100', 0):.4f}")
 
         except Exception as e:
-            print(f"   ✗ Link prediction failed: {e}")
+            print(f"   Link prediction failed: {e}")
             results['link_prediction'] = {'error': str(e)}
     else:
-        print("   ⚠ Skipped (no edges provided)")
+        print("   Skipped (no edges provided)")
         results['link_prediction'] = {'skipped': 'no edges provided'}
-
-    # 3. Node Clustering Evaluation
-    print("\n3. Node Clustering...")
-    try:
-        # Determine number of clusters
-        if len(labels.shape) > 1:
-            n_clusters = labels.shape[1]
-        else:
-            n_clusters = len(torch.unique(labels))
-
-        clustering_results = evaluate_node_clustering(
-            embeddings, labels, n_clusters, device
-        )
-
-        results['node_clustering'] = clustering_results
-        print(f"   ✓ NMI: {clustering_results['nmi']:.4f} ± {clustering_results['nmi_std']:.4f}")
-        print(f"   ✓ ARI: {clustering_results['ari']:.4f} ± {clustering_results['ari_std']:.4f}")
-        print(f"   ✓ Accuracy: {clustering_results['accuracy']:.4f} ± {clustering_results['accuracy_std']:.4f}")
-        print(f"   ✓ Modularity: {clustering_results['modularity']:.4f}")
-
-    except Exception as e:
-        print(f"   ✗ Node clustering failed: {e}")
-        results['node_clustering'] = {'error': str(e)}
 
     print("\n" + "=" * 60)
     print("EVALUATION COMPLETE")

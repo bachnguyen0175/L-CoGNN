@@ -13,7 +13,6 @@ if [ ! -f "../../results/teacher_heco_acm.pkl" ]; then
     exit 1
 fi
 
-echo "✅ Both teacher models found"
 echo "🚀 Starting dual-teacher student training..."
 
 # Check for GPU
@@ -31,30 +30,16 @@ TEACHER_PATH="../results/teacher_heco_acm.pkl"
 MIDDLE_TEACHER_PATH="../results/middle_teacher_heco_acm.pkl"
 STUDENT_SAVE_PATH="../results/student_heco_acm.pkl"
 
-echo "Configuration:"
-echo "  Dataset: $DATASET"
-echo "  Student epochs: $STUDENT_EPOCHS"
-echo "  Student compression: $STUDENT_COMPRESSION"
-echo "  Main teacher KD weight: $DISTILL_WEIGHT (knowledge distillation)"
-echo "  Middle teacher pruning weight: $PRUNING_WEIGHT (pruning guidance only)"
-echo "  Teacher path: $TEACHER_PATH"
-echo "  Middle teacher path: $MIDDLE_TEACHER_PATH"
-echo ""
-
 # Run dual-teacher student training
 cd .. && PYTHONPATH=. ../.venv/bin/python training/train_student.py \
     $DATASET \
     --teacher_model_path $TEACHER_PATH \
     --middle_teacher_path $MIDDLE_TEACHER_PATH \
     --student_save_path $STUDENT_SAVE_PATH \
-    --stage2_epochs=500 \
+    --stage2_epochs=100 \
     --lr=0.0008 \
-    --stage2_distill_weight=0.8 \
-    --pruning_weight=0.3 \
     --student_compression_ratio=0.5 \
     $GPU_FLAG\
-    --use_student_contrast_loss \
-    --use_kd_loss \
 
 if [ $? -eq 0 ]; then
     echo ""

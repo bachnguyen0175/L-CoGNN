@@ -2,9 +2,11 @@
 Teacher Model Pre-training Script for KD-HGRL
 """
 
+import os
+import sys
+import time
 import torch
 import numpy as np
-import sys
 from tqdm.auto import tqdm
 
 # Add utils to path
@@ -23,21 +25,6 @@ class TeacherTrainer:
         
         # Load data
         print(f"Loading {args.dataset} dataset...")
-
-        # Set dataset-specific parameters if not already set
-        if not hasattr(args, 'type_num'):
-            if args.dataset == "acm":
-                args.type_num = [4019, 7167, 60]  # [paper, author, subject]
-                args.nei_num = 2
-            elif args.dataset == "dblp":
-                args.type_num = [4057, 14328, 7723, 20]  # [paper, author, conference, term]
-                args.nei_num = 3
-            elif args.dataset == "aminer":
-                args.type_num = [6564, 13329, 35890]  # [paper, author, reference]
-                args.nei_num = 2
-            elif args.dataset == "freebase":
-                args.type_num = [3492, 2502, 33401, 4459]  # [movie, director, actor, writer]
-                args.nei_num = 3
 
         self.nei_index, self.feats, self.mps, self.pos, self.label, self.idx_train, self.idx_val, self.idx_test = load_data(args.dataset, args.ratio, args.type_num)
         
@@ -63,18 +50,18 @@ class TeacherTrainer:
         self.best_loss = float('inf')
         self.best_epoch = 0
         self.patience_counter = 0
+        self.training_start_time = None
         
     def move_data_to_device(self):
         """Move all data to the specified device"""
-        if torch.cuda.is_available():
-            print(f'Using CUDA device: {self.device}')
-            self.feats = [feat.to(self.device) for feat in self.feats]
-            self.mps = [mp.to(self.device) for mp in self.mps]
-            self.pos = self.pos.to(self.device)
-            self.label = self.label.to(self.device)
-            self.idx_train = [idx.to(self.device) for idx in self.idx_train]
-            self.idx_val = [idx.to(self.device) for idx in self.idx_val]
-            self.idx_test = [idx.to(self.device) for idx in self.idx_test]
+        print(f'Moving data to device: {self.device}')
+        self.feats = [feat.to(self.device) for feat in self.feats]
+        self.mps = [mp.to(self.device) for mp in self.mps]
+        self.pos = self.pos.to(self.device)
+        self.label = self.label.to(self.device)
+        self.idx_train = [idx.to(self.device) for idx in self.idx_train]
+        self.idx_val = [idx.to(self.device) for idx in self.idx_val]
+        self.idx_test = [idx.to(self.device) for idx in self.idx_test]
         
     def init_model(self):
         """Initialize the teacher model"""
@@ -160,11 +147,14 @@ class TeacherTrainer:
     def train(self):
         """Main training loop"""
         print("Starting teacher model training...")
-        print(f"Training for {self.args.nb_epochs} epochs")
+        print(f"Training for {self.args.stage1_epochs} epochs")
         print(f"Patience: {self.args.patience}")
         print("-" * 60)
         
-        progress_bar = tqdm(range(self.args.nb_epochs), desc="Teacher Training", leave=False, dynamic_ncols=True)
+        # Start timing
+        self.training_start_time = time.time()
+        
+        progress_bar = tqdm(range(self.args.stage1_epochs), desc="Teacher Training", leave=False, dynamic_ncols=True, unit='epoch')
         for epoch in progress_bar:
             # Epoch-level NumPy seeding for reproducibility of any np-based sampling
             np.random.seed(self.args.seed + epoch)
@@ -226,9 +216,30 @@ class TeacherTrainer:
         print(f"  Macro F1: {macro_f1:.4f}")
         print(f"  Micro F1: {micro_f1:.4f}")
         
+        # Training time statistics
+        total_time = time.time() - self.training_start_time
+        print(f"\nTraining Time:")
+        print(f"  Total: {total_time/3600:.2f} hours ({total_time:.1f} seconds)")
+        print(f"  Epochs: {self.best_epoch}")
+        print(f"  Avg per epoch: {total_time/max(self.best_epoch, 1):.2f} seconds")
+        
         # Model statistics
         num_params = count_parameters(self.model)
-        print(f"Teacher model parameters: {num_params:,}")
+        print(f"\nTeacher model parameters: {num_params:,}")
+        
+        # Save timing info
+        timing_info = {
+            'total_seconds': total_time,
+            'total_hours': total_time/3600,
+            'epochs': self.best_epoch,
+            'avg_seconds_per_epoch': total_time / max(self.best_epoch, 1),
+            'final_accuracy': accuracy,
+            'final_macro_f1': macro_f1,
+            'final_micro_f1': micro_f1
+        }
+        timing_path = f"{self.args.teacher_save_path}_timing.pkl"
+        torch.save(timing_info, timing_path)
+        print(f"Timing info saved to: {timing_path}")
         
         print("Teacher training completed!")
         return accuracy, macro_f1, micro_f1
@@ -238,11 +249,30 @@ def main():
     # Parse arguments
     args = kd_params()
     
-    # Set random seeds
+    # Set random seeds for reproducibility
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)  # For multi-GPU
+        
+        # Deterministic behavior (note: may impact performance)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        
+        # Set environment variable for deterministic CuBLAS operations
+        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+        
+        # Enable deterministic algorithms (PyTorch 1.8+)
+        try:
+            torch.use_deterministic_algorithms(True)
+        except AttributeError:
+            # Older PyTorch versions don't have this
+            pass
+        except RuntimeError as e:
+            # If deterministic algorithms cause issues, warn but continue
+            print(f"Warning: Could not enable full deterministic mode: {e}")
+            print("Training will continue with partial reproducibility (seeds + cudnn settings)")
     
     # Create trainer and start training
     trainer = TeacherTrainer(args)
