@@ -283,12 +283,12 @@ results_dir = os.environ.get('LCOGNN_RESULTS_DIR', os.path.join(os.path.dirname(
 os.makedirs(results_dir, exist_ok=True)
 output_path = os.path.join(results_dir, 'comprehensive_visualization.png')
 plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
-print(f"✅ Comprehensive visualization saved to: {output_path}")
+print(f"Comprehensive visualization saved to: {output_path}")
 
 # Also save as PDF for high-quality presentation
 output_path_pdf = os.path.join(results_dir, 'comprehensive_visualization.pdf')
 plt.savefig(output_path_pdf, dpi=300, bbox_inches='tight', facecolor='white')
-print(f"✅ PDF version saved to: {output_path_pdf}")
+print(f"PDF version saved to: {output_path_pdf}")
 
 plt.show()
 

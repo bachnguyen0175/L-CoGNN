@@ -1,0 +1,74 @@
+{
+  "dataset": "acm",
+  "timestamp": "2025-11-18 18:36:46",
+  "models": {
+    "teacher": {
+      "model_type": "teacher",
+      "total_parameters": 609794,
+      "trainable_parameters": 609794,
+      "embedding_dim": 64,
+      "node_classification": {
+        "accuracy": 0.8858560919761658,
+        "macro_f1": 0.8789316684192424,
+        "micro_f1": 0.8858560794044665
+      },
+      "link_prediction": {
+        "auc": 0.824609050938738,
+        "ap": 0.8025191104240915
+      }
+    },
+    "student": {
+      "model_type": "student",
+      "total_parameters": 309188,
+      "trainable_parameters": 309188,
+      "embedding_dim": 32,
+      "node_classification": {
+        "accuracy": 0.8957816362380981,
+        "macro_f1": 0.889510731675303,
+        "micro_f1": 0.8957816377171216
+      },
+      "link_prediction": {
+        "auc": 0.8388614498666053,
+        "ap": 0.8045068869222697
+      }
+    },
+    "middle_teacher": {
+      "model_type": "middle_teacher",
+      "total_parameters": 15574625,
+      "trainable_parameters": 15574625,
+      "embedding_dim": 64,
+      "node_classification": {
+        "accuracy": 0.8957816362380981,
+        "macro_f1": 0.8937557636484206,
+        "micro_f1": 0.8957816377171216
+      },
+      "link_prediction": {
+        "auc": 0.814325532801413,
+        "ap": 0.7863157655465508
+      }
+    }
+  },
+  "comparison": {
+    "parameter_reduction": 0.49296319740764916,
+    "task_comparisons": {
+      "node_classification": {
+        "accuracy_retention": 1.011204465772528,
+        "accuracy_forgetting": 0.0,
+        "macro_f1_retention": 1.0120362749872092,
+        "macro_f1_forgetting": 0.0,
+        "micro_f1_retention": 1.011204481792717,
+        "micro_f1_forgetting": 0.0
+      },
+      "link_prediction": {
+        "auc_retention": 1.0172838254826846,
+        "auc_forgetting": 0.0,
+        "ap_retention": 1.0024769210755962,
+        "ap_forgetting": 0.0
+      }
+    },
+    "average_forget": 0.0,
+    "average_forget_percentage": 0.0,
+    "weighting_scheme": "node_classification: 50%, link_prediction: 50%",
+    "distillation_quality": "Excellent"
+  }
+}

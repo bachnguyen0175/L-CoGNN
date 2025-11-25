@@ -2,19 +2,13 @@
 
 # Core PyTorch (CPU/GPU compatible - will auto-detect CUDA if available)
 # torch==2.1.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
-# torchvision==0.16.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
-# torchdata==0.7.1
-# torchaudio==2.1.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
-
-# Deep Graph Learning (CPU/GPU)
-# If you have installed dgl-cuXX package, please uninstall it first.
-# pip install  dgl -f https://data.dgl.ai/wheels/torch-2.1/cu118/repo.html
 
 # Numerical Computing
 numpy>=1.21.0,<2.0.0
 scipy==1.9.3
 # Machine Learning
 scikit-learn>=1.0.0,<2.0.0
+setuptools
 
 # Progress Bars
 tqdm>=4.60.0

@@ -13,7 +13,6 @@ if [ ! -f "../../results/teacher_heco_acm.pkl" ]; then
     exit 1
 fi
 
-echo "✅ Both teacher models found"
 echo "🚀 Starting dual-teacher student training..."
 
 # Check for GPU

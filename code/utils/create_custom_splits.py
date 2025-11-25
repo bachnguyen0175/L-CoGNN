@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Custom Data Splitting Script for L-CoGNN
+Custom Data Splitting Script
 =========================================
 
-Script để tạo train/val/test splits với tỷ lệ tùy chỉnh cho datasets trong L-CoGNN.
+Script để tạo train/val/test splits với tỷ lệ tùy chỉnh cho datasets.
 
 Usage:
     python create_custom_splits.py --dataset acm --train_ratio 0.6 --val_ratio 0.2 --test_ratio 0.2
@@ -13,16 +13,68 @@ Usage:
 import numpy as np
 import argparse
 import os
+from sklearn.model_selection import train_test_split
 from collections import Counter
 import sys
+from typing import Optional, List
 
 
-def load_labels(dataset):
-    """Load labels for the specified dataset"""
-    label_path = f"data/{dataset}/labels.npy"
+def resolve_dataset_dir(dataset: str, data_dir: Optional[str] = None) -> str:
+    """Resolve and return an absolute path to the dataset directory.
+
+    Tries the following in order:
+      1) --data_dir (if provided), with and without appending the dataset name
+      2) <repo_root>/data/<dataset> (repo_root inferred relative to this file)
+      3) <cwd>/data/<dataset>
+      4) <this_script_dir>/data/<dataset>
+
+    Raises FileNotFoundError if no valid path containing labels.npy is found.
+    """
+    candidates: List[str] = []
+
+    # 1) User-provided --data_dir
+    if data_dir:
+        # If the provided path already points to the dataset directory
+        candidates.append(os.path.abspath(data_dir))
+        # Or it points to the parent 'data' directory
+        candidates.append(os.path.abspath(os.path.join(data_dir, dataset)))
+
+    # 2) Repo root inferred from this file: <repo_root>/data/<dataset>
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.abspath(os.path.join(script_dir, "..", ".."))
+    candidates.append(os.path.join(repo_root, "data", dataset))
+
+    # 3) Current working directory: <cwd>/data/<dataset>
+    candidates.append(os.path.join(os.getcwd(), "data", dataset))
+
+    # 4) Next to this script (fallback): <this_script_dir>/data/<dataset>
+    candidates.append(os.path.join(script_dir, "data", dataset))
+
+    tried = []
+    for path in candidates:
+        # Normalize duplicate/already-added paths
+        path = os.path.abspath(path)
+        if path in tried:
+            continue
+        tried.append(path)
+        if os.path.exists(os.path.join(path, "labels.npy")):
+            return path
+
+    # If none matched labels.npy, still provide a helpful error
+    searched = "\n  - ".join(tried)
+    raise FileNotFoundError(
+        f"Could not locate dataset directory for '{dataset}'.\n"
+        f"Looked for a labels.npy in:\n  - {searched}\n"
+        f"Tip: pass --data_dir /absolute/path/to/data (the folder containing {dataset}/)"
+    )
+
+
+def load_labels(dataset_dir: str):
+    """Load labels from the resolved dataset directory."""
+    label_path = os.path.join(dataset_dir, "labels.npy")
     if not os.path.exists(label_path):
         raise FileNotFoundError(f"Labels file not found: {label_path}")
-    
+
     labels = np.load(label_path)
     return labels
 
@@ -54,7 +106,7 @@ def create_stratified_splits(labels, train_ratio=0.6, val_ratio=0.2, test_ratio=
     unique_labels = np.unique(labels)
     num_classes = len(unique_labels)
     
-    print(f"📊 Dataset Info:")
+    print(f"Dataset Info:")
     print(f"   Total nodes: {total_nodes}")
     print(f"   Classes: {num_classes} {unique_labels}")
     
@@ -76,11 +128,11 @@ def create_stratified_splits(labels, train_ratio=0.6, val_ratio=0.2, test_ratio=
         # Balanced training set with fixed size
         samples_per_class = train_size // num_classes
         if samples_per_class * num_classes != train_size:
-            print(f"⚠️  Warning: train_size {train_size} not divisible by {num_classes} classes")
-            print(f"   Using {samples_per_class * num_classes} samples instead")
+            print(f"Warning: train_size {train_size} not divisible by {num_classes} classes")
+            print(f"Using {samples_per_class * num_classes} samples instead")
             train_size = samples_per_class * num_classes
         
-        print(f"🎯 Creating balanced training set: {samples_per_class} samples per class")
+        print(f"Creating balanced training set: {samples_per_class} samples per class")
         
         for label in unique_labels:
             indices = class_indices[label]
@@ -92,19 +144,58 @@ def create_stratified_splits(labels, train_ratio=0.6, val_ratio=0.2, test_ratio=
             class_indices[label] = remaining
     
     elif train_size is not None:
-        # Fixed training size, stratified
+        # Fixed training size, stratified with remainder redistribution
+        if train_size > total_nodes:
+            raise ValueError(f"Requested train_size {train_size} exceeds total nodes {total_nodes}")
+
+        allocations = {}
+        remainders = []
+        total_allocated = 0
+
         for label in unique_labels:
             indices = class_indices[label]
-            class_ratio = len(indices) / total_nodes
-            class_train_size = int(train_size * class_ratio)
-            
-            if len(indices) < class_train_size:
-                class_train_size = len(indices)
-                print(f"⚠️  Warning: Class {label} has only {len(indices)} samples, using all")
-            
-            train_idx.extend(indices[:class_train_size])
-            remaining = indices[class_train_size:]
-            class_indices[label] = remaining
+            class_total = len(indices)
+            if class_total == 0:
+                allocations[label] = 0
+                remainders.append((0.0, label))
+                continue
+
+            exact_share = train_size * (class_total / total_nodes)
+            base = min(int(np.floor(exact_share)), class_total)
+
+            allocations[label] = base
+            total_allocated += base
+            remainders.append((exact_share - base, label))
+
+        remaining_capacity = {
+            label: len(class_indices[label]) - allocations[label]
+            for label in unique_labels
+        }
+
+        leftover = min(train_size, sum(len(class_indices[label]) for label in unique_labels)) - total_allocated
+
+        # Distribute remaining samples based on largest fractional remainder
+        for _, label in sorted(remainders, key=lambda item: item[0], reverse=True):
+            if leftover <= 0:
+                break
+            if remaining_capacity[label] <= 0:
+                continue
+
+            allocations[label] += 1
+            remaining_capacity[label] -= 1
+            leftover -= 1
+
+        if leftover > 0:
+            print(f"Warning: Unable to allocate {leftover} requested training samples due to class size limits")
+
+        for label in unique_labels:
+            indices = class_indices[label]
+            alloc = allocations[label]
+            if alloc > len(indices):
+                alloc = len(indices)
+
+            train_idx.extend(indices[:alloc])
+            class_indices[label] = indices[alloc:]
     
     else:
         # Ratio-based training split
@@ -117,45 +208,70 @@ def create_stratified_splits(labels, train_ratio=0.6, val_ratio=0.2, test_ratio=
             class_indices[label] = remaining
     
     # Handle remaining splits (val/test)
-    remaining_indices = []
-    for label in unique_labels:
-        remaining_indices.extend(class_indices[label])
-    
-    remaining_indices = np.array(remaining_indices)
-    np.random.shuffle(remaining_indices)
-    
-    if val_size is not None and test_size is not None:
-        # Fixed sizes for val/test
-        if len(remaining_indices) < val_size + test_size:
-            raise ValueError(f"Not enough remaining samples: {len(remaining_indices)} < {val_size + test_size}")
-        
-        val_idx = remaining_indices[:val_size]
-        test_idx = remaining_indices[val_size:val_size + test_size]
-        
-    elif val_size is not None:
-        # Fixed val size, rest goes to test
-        if len(remaining_indices) < val_size:
-            raise ValueError(f"Not enough samples for validation: {len(remaining_indices)} < {val_size}")
-        
-        val_idx = remaining_indices[:val_size]
-        test_idx = remaining_indices[val_size:]
-        
-    elif test_size is not None:
-        # Fixed test size, rest goes to val
-        if len(remaining_indices) < test_size:
-            raise ValueError(f"Not enough samples for test: {len(remaining_indices)} < {test_size}")
-        
-        test_idx = remaining_indices[-test_size:]
-        val_idx = remaining_indices[:-test_size]
-        
-    else:
-        # Ratio-based val/test split
+    def _allocate_split(target_size, available_per_class, descriptor):
+        if target_size is None:
+            return {label: 0 for label in unique_labels}
+
+        allocations = {}
+        remainders = []
+        total_allocated = 0
+
+        total_available = sum(available_per_class.values())
+        if target_size > total_available:
+            raise ValueError(
+                f"Requested {descriptor} size {target_size} exceeds remaining samples {total_available}"
+            )
+
+        for label, available in available_per_class.items():
+            if available <= 0:
+                allocations[label] = 0
+                remainders.append((0.0, label))
+                continue
+
+            exact_share = target_size * (available / total_available)
+            base = int(np.floor(exact_share))
+            allocations[label] = base
+            total_allocated += base
+            remainders.append((exact_share - base, label))
+
+        leftover = target_size - total_allocated
+        if leftover < 0:
+            leftover = 0
+
+        for _, label in sorted(remainders, key=lambda item: item[0], reverse=True):
+            if leftover <= 0:
+                break
+            if available_per_class[label] - allocations[label] <= 0:
+                continue
+            allocations[label] += 1
+            leftover -= 1
+
+        if leftover > 0:
+            print(f"Warning: Unable to stratify {descriptor} fully, short by {leftover} samples")
+
+        return allocations
+
+    class_remainders = {label: len(indices) for label, indices in class_indices.items()}
+
+    if val_size is None and test_size is None:
         remaining_total = val_ratio + test_ratio
-        val_ratio_norm = val_ratio / remaining_total
-        
-        val_size_calc = int(len(remaining_indices) * val_ratio_norm)
-        val_idx = remaining_indices[:val_size_calc]
-        test_idx = remaining_indices[val_size_calc:]
+        if remaining_total <= 0:
+            raise ValueError("Validation and test ratios must sum to > 0 when sizes are not provided")
+        val_size = int(np.round(sum(class_remainders.values()) * (val_ratio / remaining_total)))
+        test_size = sum(class_remainders.values()) - val_size
+
+    val_allocations = _allocate_split(val_size, class_remainders, "validation")
+    for label, alloc in val_allocations.items():
+        indices = class_indices[label]
+        val_idx.extend(indices[:alloc])
+        class_indices[label] = indices[alloc:]
+        class_remainders[label] -= alloc
+
+    test_allocations = _allocate_split(test_size, class_remainders, "test")
+    for label, alloc in test_allocations.items():
+        indices = class_indices[label]
+        test_idx.extend(indices[:alloc])
+        class_indices[label] = indices[alloc:]
     
     # Convert to numpy arrays and sort
     train_idx = np.sort(np.array(train_idx, dtype=int))
@@ -169,7 +285,7 @@ def analyze_splits(labels, train_idx, val_idx, test_idx):
     """Analyze and print statistics about the splits"""
     total_nodes = len(labels)
     
-    print(f"\n📋 SPLIT ANALYSIS:")
+    print(f"\nSPLIT ANALYSIS:")
     print(f"{'='*50}")
     
     for split_name, indices in [("Train", train_idx), ("Val", val_idx), ("Test", test_idx)]:
@@ -193,33 +309,31 @@ def analyze_splits(labels, train_idx, val_idx, test_idx):
     ]
     
     if sum(overlaps) > 0:
-        print(f"⚠️  Overlaps detected: Train∩Val={overlaps[0]}, Train∩Test={overlaps[1]}, Val∩Test={overlaps[2]}")
+        print(f"Overlaps detected: Train∩Val={overlaps[0]}, Train∩Test={overlaps[1]}, Val∩Test={overlaps[2]}")
     else:
-        print(f"✅ No overlaps between splits")
+        print(f"No overlaps between splits")
 
 
-def save_splits(dataset, train_idx, val_idx, test_idx, suffix="custom"):
-    """Save the splits to files"""
-    data_dir = f"data/{dataset}"
-    
+def save_splits(dataset_dir: str, train_idx, val_idx, test_idx, suffix="custom"):
+    """Save the splits to files under the resolved dataset directory."""
     # Create backup directory if needed
-    backup_dir = f"{data_dir}/backup_splits"
+    backup_dir = os.path.join(dataset_dir, "backup_splits")
     os.makedirs(backup_dir, exist_ok=True)
-    
+
     # Save new splits
-    train_path = f"{data_dir}/train_{suffix}.npy"
-    val_path = f"{data_dir}/val_{suffix}.npy"
-    test_path = f"{data_dir}/test_{suffix}.npy"
-    
+    train_path = os.path.join(dataset_dir, f"train_{suffix}.npy")
+    val_path = os.path.join(dataset_dir, f"val_{suffix}.npy")
+    test_path = os.path.join(dataset_dir, f"test_{suffix}.npy")
+
     np.save(train_path, train_idx)
     np.save(val_path, val_idx)
     np.save(test_path, test_idx)
-    
-    print(f"\n💾 SAVED SPLITS:")
+
+    print(f"\nSAVED SPLITS:")
     print(f"   {train_path}")
     print(f"   {val_path}")
     print(f"   {test_path}")
-    
+
     return train_path, val_path, test_path
 
 
@@ -229,6 +343,9 @@ def main():
     parser.add_argument("--dataset", type=str, default="acm", 
                        choices=["acm", "dblp", "aminer", "freebase"],
                        help="Dataset name")
+
+    parser.add_argument("--data_dir", type=str, default=None,
+                       help="Path to the 'data' directory containing dataset folders (e.g., /path/to/data)")
     
     # Ratio-based splitting
     parser.add_argument("--train_ratio", type=float, default=None,
@@ -256,14 +373,16 @@ def main():
     
     args = parser.parse_args()
     
-    print("🔧 CUSTOM DATA SPLITTING TOOL")
+    print("CUSTOM DATA SPLITTING TOOL")
     print("="*40)
     
-    # Load labels
+    # Resolve dataset directory and load labels
     try:
-        labels = load_labels(args.dataset)
+        dataset_dir = resolve_dataset_dir(args.dataset, args.data_dir)
+        print(f"Using dataset directory: {dataset_dir}")
+        labels = load_labels(dataset_dir)
     except FileNotFoundError as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         sys.exit(1)
     
     # Set default ratios if not specified
@@ -289,17 +408,17 @@ def main():
             seed=args.seed
         )
     except Exception as e:
-        print(f"❌ Error creating splits: {e}")
+        print(f"Error creating splits: {e}")
         sys.exit(1)
     
     # Analyze splits
     analyze_splits(labels, train_idx, val_idx, test_idx)
     
     # Save splits
-    save_splits(args.dataset, train_idx, val_idx, test_idx, args.suffix)
+    save_splits(dataset_dir, train_idx, val_idx, test_idx, args.suffix)
     
-    print(f"\n✅ Successfully created custom splits for {args.dataset} dataset!")
-    print(f"\n💡 To use in training, update ratio parameter in kd_params.py:")
+    print(f"\nSuccessfully created custom splits for {args.dataset} dataset!")
+    print(f"\nTo use in training, update ratio parameter in kd_params.py:")
     print(f"   args.ratio = ['{args.suffix}']  # Single split")
     print(f"   # or")
     print(f"   args.ratio = ['{args.suffix}', '60']  # Your split + existing 60 split")

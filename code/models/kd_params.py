@@ -4,7 +4,7 @@ Configuration parameters for Knowledge Distillation in Heterogeneous Graph Learn
 
 import argparse
 
-
+    
 def kd_params():
     """Knowledge Distillation specific parameters"""
     parser = argparse.ArgumentParser()
@@ -22,7 +22,6 @@ def kd_params():
     parser.add_argument('--tau', type=float, default=0.8)
     parser.add_argument('--feat_drop', type=float, default=0.3)
     parser.add_argument('--attn_drop', type=float, default=0.5)
-    parser.add_argument('--sample_rate', nargs='+', type=int, default=[7, 1])
     parser.add_argument('--lam', type=float, default=0.5)
     parser.add_argument('--mp_encoder_type', type=str, default="typed_operator",
                         choices=["gcn_attn", "typed_operator"],
@@ -42,26 +41,31 @@ def kd_params():
     
     # Model paths
     parser.add_argument('--teacher_model_path', type=str, default=None, help="Path to pre-trained teacher model")
+    parser.add_argument('--middle_teacher_path', type=str, default=None, help="Path to pre-trained middle teacher model")
     parser.add_argument('--student_model_path', type=str, default=None, help="Path to pre-trained student model")
     parser.add_argument('--student_dim', type=int, default=32, help="Dimension of student model embeddings (50% in default)")
 
     # ==================== LOSS CONTROL FLAGS ====================
     # Core Loss Flags
     # 1
-    parser.add_argument('--use_student_contrast_loss', action='store_true', default=True, help="Use student's base contrastive loss")
-    # 2
     parser.add_argument('--use_kd_loss', action='store_true', default=True, help="Use knowledge distillation loss (teacher -> student)")
+    # 2
+    parser.add_argument('--use_augmentation_alignment_loss', action='store_true', default=False, help="Use expert alignment loss (middle teacher)")
+    
+    # Supplementary Loss Flags
     # 3
-    parser.add_argument('--use_augmentation_alignment_loss', action='store_true', default=True, help="Use expert alignment loss (middle teacher)")
-    
-    # Link Prediction Loss Flags
-    # 4
-    parser.add_argument('--use_link_recon_loss', action='store_true', default=True, help="Use link reconstruction loss")
-    
+    parser.add_argument('--use_link_recon_loss', action='store_true', default=False, help="Use link reconstruction loss")
+    parser.add_argument('--link_recon_weight', type=float, default=0.3, help="Weight for link reconstruction loss (reduced to balance with classification)")
+    parser.add_argument('--link_sample_rate', type=int, default=2000, help="Number of edges to sample for link prediction")
+
     # Hidden loss weights
-    parser.add_argument('--augmentation_weight', type=float, default=0.5, help='Weight for augmentation guidance loss')
-    parser.add_argument('--main_distill_weight', type=float, default=0.5, help='Distillation weight for teacher')
+    parser.add_argument('--augmentation_weight', type=float, default=0.5, help='Weight for augmentation guidance loss (reduced to avoid conflict with main teacher)')
+    parser.add_argument('--main_distill_weight', type=float, default=0.5, help='Distillation weight for main teacher (primary knowledge source)')
     parser.add_argument('--student_compression_ratio', type=float, default=0.5, help='Compression ratio for student')
+    parser.add_argument('--augmentation_structure_scale', type=float, default=0.15,
+                        help='Scale factor applied to structural guidance injected from the middle teacher')
+    parser.add_argument('--augmentation_attention_floor', type=float, default=0.05,
+                        help='Minimum fusion weight to keep middle-teacher guidance active during student training')
      
     # Model saving
     parser.add_argument('--teacher_save_path', type=str, default="teacher_heco.pkl", help="Teacher model save path")
@@ -69,19 +73,15 @@ def kd_params():
     parser.add_argument('--middle_teacher_save_path', type=str, default="middle_teacher_heco.pkl", help="Middle teacher save path")
     
     # Hierarchical training parameters
-    parser.add_argument('--stage1_epochs', type=int, default=100, help='Epochs for stage 1')
-    parser.add_argument('--stage2_epochs', type=int, default=100, help='Epochs for stage 2')
+    parser.add_argument('--stage1_epochs', type=int, default=100, help='Epochs for stage 1 - training teacher model')
+    parser.add_argument('--stage2_epochs', type=int, default=100, help='Epochs for stage 2 - training student model')
     
-    # Enhanced Knowledge Distillation parameters
+    # Knowledge Distillation parameters
     parser.add_argument('--kd_temperature', type=float, default=2.5, help='Temperature for knowledge distillation')
     
-    # Enhanced Augmentation parameters for Dual-Teacher System
+    # Augmentation parameters
     parser.add_argument('--use_meta_path_connections', action='store_true', default=True, help="Connect nodes via meta-paths")
     parser.add_argument('--connection_strength', type=float, default=0.2, help="Meta-path connection strength")
-    
-    # Link Prediction Enhancement parameters
-    parser.add_argument('--link_recon_weight', type=float, default=0.6, help="Weight for link reconstruction loss")
-    parser.add_argument('--link_sample_rate', type=int, default=2000, help="Number of edges to sample for link prediction")
     
     # Logging and evaluation
     parser.add_argument('--log_interval', type=int, default=1, help="Logging interval")
@@ -95,8 +95,8 @@ def kd_params():
     
     parser.add_argument('--use_augmentation', type=bool, default=True,
                        help='Enable heterogeneous graph augmentation')
-    parser.add_argument('--aug_connection_strength', type=float, default=0.1,
-                       help='Strength of meta-path connections (0.0-1.0)')
+    parser.add_argument('--aug_connection_strength', type=float, default=0.05,
+                       help='Strength of meta-path connections (reduced to prevent over-smoothing)')
     parser.add_argument('--aug_low_rank_dim', type=int, default=64,
                        help='Low-rank dimension for augmentation projections')
     parser.add_argument('--aug_auto_generate', type=bool, default=True,
@@ -108,15 +108,19 @@ def kd_params():
     if args.dataset == "acm":
         args.type_num = [4019, 7167, 60]  # [paper, author, subject]
         args.nei_num = 2
+        args.sample_rate = [7, 1] 
     elif args.dataset == "dblp":
-        args.type_num = [4057, 14328, 7723, 20]  # [paper, author, conference, term]
-        args.nei_num = 3
+        args.type_num = [4057, 14328, 7723, 20]  # [author, paper, conference, term]
+        args.nei_num = 1 
+        args.sample_rate = [6] 
     elif args.dataset == "aminer":
         args.type_num = [6564, 13329, 35890]  # [paper, author, reference]
         args.nei_num = 2
+        args.sample_rate = [3, 8]
     elif args.dataset == "freebase":
         args.type_num = [3492, 2502, 33401, 4459]  # [movie, director, actor, writer]
         args.nei_num = 3
+        args.sample_rate = [1, 18, 2]
     
     return args
 
@@ -126,17 +130,19 @@ def get_distillation_config(args):
     return {
         'use_kd_loss': getattr(args, 'use_kd_loss', True),
         'use_augmentation_alignment_loss': getattr(args, 'use_augmentation_alignment_loss', True),
-        'use_link_recon_loss': getattr(args, 'use_link_recon_loss', True),
+        'use_link_recon_loss': getattr(args, 'use_link_recon_loss', False),
         'kd_temperature': getattr(args, 'kd_temperature', 2.5),
-        'link_recon_weight': getattr(args, 'link_recon_weight', 0.6),
+        'link_recon_weight': getattr(args, 'link_recon_weight', 0.3),
         'link_sample_rate': getattr(args, 'link_sample_rate', 2000),
     }
 
 def get_augmentation_config(args):
     """Get augmentation configuration dictionary"""
+    num_metapaths = 3 if args.dataset == 'dblp' else 2
     return {
         'use_meta_path_connections': getattr(args, 'use_meta_path_connections', True),
-        'connection_strength': getattr(args, 'connection_strength', 0.2)
+        'connection_strength': getattr(args, 'aug_connection_strength', 0.05),  # Use aug_connection_strength arg
+        'num_metapaths': num_metapaths
     }
 
 

@@ -9,8 +9,11 @@ import torch
 import numpy as np
 from tqdm.auto import tqdm
 
-# Add utils to path
-sys.path.append('./utils')
+# Add utils to path relative to project root
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_UTILS_DIR = os.path.abspath(os.path.join(_SCRIPT_DIR, '..', 'utils'))
+if _UTILS_DIR not in sys.path:
+    sys.path.insert(0, _UTILS_DIR)
 
 from models.kd_heco import MyHeCo, count_parameters
 from models.kd_params import kd_params
@@ -25,21 +28,6 @@ class TeacherTrainer:
         
         # Load data
         print(f"Loading {args.dataset} dataset...")
-
-        # Set dataset-specific parameters if not already set
-        if not hasattr(args, 'type_num'):
-            if args.dataset == "acm":
-                args.type_num = [4019, 7167, 60]  # [paper, author, subject]
-                args.nei_num = 2
-            elif args.dataset == "dblp":
-                args.type_num = [4057, 14328, 7723, 20]  # [paper, author, conference, term]
-                args.nei_num = 3
-            elif args.dataset == "aminer":
-                args.type_num = [6564, 13329, 35890]  # [paper, author, reference]
-                args.nei_num = 2
-            elif args.dataset == "freebase":
-                args.type_num = [3492, 2502, 33401, 4459]  # [movie, director, actor, writer]
-                args.nei_num = 3
 
         self.nei_index, self.feats, self.mps, self.pos, self.label, self.idx_train, self.idx_val, self.idx_test = load_data(args.dataset, args.ratio, args.type_num)
         
@@ -233,7 +221,7 @@ class TeacherTrainer:
         
         # Training time statistics
         total_time = time.time() - self.training_start_time
-        print("\nTraining Time Statistics:")
+        print(f"\nTraining Time:")
         print(f"  Total: {total_time/3600:.2f} hours ({total_time:.1f} seconds)")
         print(f"  Epochs: {self.best_epoch}")
         print(f"  Avg per epoch: {total_time/max(self.best_epoch, 1):.2f} seconds")

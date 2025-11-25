@@ -20,12 +20,15 @@ import sys
 from collections import Counter
 import torch as th
 
-# Add code directory to path
-code_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'code')
-if code_dir not in sys.path:
-    sys.path.insert(0, code_dir)
+# Ensure the utils package is importable when the script is executed directly
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
 
-from load_data import load_data
+for _path in (_PROJECT_ROOT, _SCRIPT_DIR):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
+from utils.load_data import load_data
 
 
 def print_section(title):

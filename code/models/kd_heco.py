@@ -35,8 +35,6 @@ class GCN(nn.Module):
         elif seq_fts.dim() > 2:
             seq_fts = seq_fts.view(-1, seq_fts.size(-1))
         
-        # At this point seq_fts is guaranteed to be 2D
-        
         # Handle sparse vs dense adjacency matrices
         if hasattr(adj, 'is_sparse') and adj.is_sparse:
             # Sparse path
@@ -132,12 +130,6 @@ class myMp_encoder(nn.Module):
 
 
 class MyHeCo(nn.Module):
-    """Original MyHeCo model
-
-    Accepts optional kwargs for compatibility with training scripts that may pass
-    meta-path encoder configuration (mp_encoder_type, mp_low_rank_dim, use_path_gate,
-    operator_type, poly_order). These are currently ignored in this implementation.
-    """
     def __init__(self, hidden_dim, feats_dim_list, feat_drop, attn_drop, P, sample_rate,
                  nei_num, tau, lam, **kwargs):
         super(MyHeCo, self).__init__()
@@ -178,6 +170,34 @@ class MyHeCo(nn.Module):
         z_mp = self.mp(h_all[0], mps)
         z_sc = self.sc(h_all, nei_index)
         return z_mp, z_sc
+
+    def get_multi_order_representations(self, feats, mps, nei_index):
+        """Get multi-level representations for hierarchical distillation"""
+        h_all = []
+        for i in range(len(feats)):
+            h_all.append(F.elu(self.feat_drop(self.fc_list[i](feats[i]))))
+
+        representations = []
+
+        # Level 0: Raw input features (no projection)
+        representations.append(feats[0])
+
+        # Level 1: Projected + activated features before encoders
+        representations.append(h_all[0])
+
+        # Level 2: Meta-path encoder output
+        z_mp = self.mp(h_all[0], mps)
+        representations.append(z_mp)
+
+        # Level 3: Schema-level encoder output
+        z_sc = self.sc(h_all, nei_index)
+        representations.append(z_sc)
+
+        # Level 4: Combined representation (weighted average)
+        combined = (z_mp + z_sc) / 2
+        representations.append(combined)
+
+        return representations
 
 
 class AugmentationTeacher(nn.Module):
@@ -261,22 +281,11 @@ class AugmentationTeacher(nn.Module):
         """
         Forward pass with augmentation-aware learning and guidance generation
         """
-        # Always apply augmentation
-        aug_feats, aug_info = self.augmentation_pipeline(feats, mps=mps)
-        
-        # Process original and augmented features
-        h_all_orig = []
-        h_all_aug = []
-        for i in range(len(feats)):
-            h_all_orig.append(F.elu(self.feat_drop(self.fc_list[i](feats[i]))))
-            h_all_aug.append(F.elu(self.feat_drop(self.fc_list[i](aug_feats[i]))))
-        
-        # Get embeddings from both original and augmented data
-        z_mp_orig = self.mp(h_all_orig[0], mps)
-        z_sc_orig = self.sc(h_all_orig, nei_index)
-        
-        z_mp_aug = self.mp(h_all_aug[0], mps)
-        z_sc_aug = self.sc(h_all_aug, nei_index)
+        (z_mp_orig,
+         z_sc_orig,
+         z_mp_aug,
+         z_sc_aug,
+         aug_info) = self._compute_multi_view_embeddings(feats, mps, nei_index)
         
         mp_divergence_loss = -F.cosine_similarity(z_mp_orig, z_mp_aug, dim=1).mean() * 0.05
         sc_divergence_loss = -F.cosine_similarity(z_sc_orig, z_sc_aug, dim=1).mean() * 0.05
@@ -297,6 +306,24 @@ class AugmentationTeacher(nn.Module):
         if return_augmentation_guidance:
             return total_loss, augmentation_guidance
         return total_loss
+
+    def _compute_multi_view_embeddings(self, feats, mps, nei_index):
+        """Compute original and augmented embeddings used by loss and guidance."""
+        aug_feats, aug_info = self.augmentation_pipeline(feats, mps=mps)
+
+        h_all_orig = []
+        h_all_aug = []
+        for i in range(len(feats)):
+            h_all_orig.append(F.elu(self.feat_drop(self.fc_list[i](feats[i]))))
+            h_all_aug.append(F.elu(self.feat_drop(self.fc_list[i](aug_feats[i]))))
+
+        z_mp_orig = self.mp(h_all_orig[0], mps)
+        z_sc_orig = self.sc(h_all_orig, nei_index)
+
+        z_mp_aug = self.mp(h_all_aug[0], mps)
+        z_sc_aug = self.sc(h_all_aug, nei_index)
+
+        return z_mp_orig, z_sc_orig, z_mp_aug, z_sc_aug, aug_info
 
     def _generate_augmentation_guidance(self, z_mp, z_sc, aug_info):
         """Generate augmentation guidance based on learned representations"""
@@ -325,7 +352,7 @@ class AugmentationTeacher(nn.Module):
             z_combined_proj, z_combined_proj, z_combined_proj
         )
         
-        # Helps student learn from augmented views, doesn't prune the model
+        # Generate final augmentation guidance dictionary
         augmentation_guidance = {
             'mp_importance': mp_guidance.squeeze(0),  # [P] - Meta-path attention weights
             'sc_importance': sc_guidance.squeeze(0),  # [nei_num] - Schema attention weights
@@ -339,7 +366,7 @@ class AugmentationTeacher(nn.Module):
     
     def get_embeds(self, feats, mps, detach: bool = True, use_augmentation: bool = True):
         """Get embeddings with optional augmentation"""
-        if use_augmentation and self.training:
+        if use_augmentation:
             aug_feats, _ = self.augmentation_pipeline(feats, mps=mps)
             z_mp = F.elu(self.fc_list[0](aug_feats[0]))
         else:
@@ -349,7 +376,7 @@ class AugmentationTeacher(nn.Module):
     
     def get_representations(self, feats, mps, nei_index, use_augmentation: bool = True):
         """Get both meta-path and schema-level representations with optional augmentation"""
-        if use_augmentation and self.training:
+        if use_augmentation:
             aug_feats, _ = self.augmentation_pipeline(feats, mps=mps)
             processed_feats = aug_feats
         else:
@@ -366,30 +393,27 @@ class AugmentationTeacher(nn.Module):
         """
         Get augmentation-based guidance for student model
         """
+        was_training = self.training
         self.eval()  # Set to eval mode for stable guidance
         with torch.no_grad():
-            # Create dummy pos tensor on the same device as features
-            dummy_pos = torch.zeros(1, device=feats[0].device)
-            _, augmentation_guidance = self.forward(feats, dummy_pos, mps, nei_index, return_augmentation_guidance=True)
+            (_, _, z_mp_aug, z_sc_aug,
+             aug_info) = self._compute_multi_view_embeddings(feats, mps, nei_index)
+            augmentation_guidance = self._generate_augmentation_guidance(z_mp_aug, z_sc_aug, aug_info)
+        if was_training:
+            self.train()
         return augmentation_guidance
 
 class StudentMyHeCo(nn.Module):
     """Compressed student version of MyHeCo with optional augmentation teacher guidance"""
     def __init__(self, hidden_dim, feats_dim_list, feat_drop, attn_drop, P, sample_rate,
                  nei_num, tau, lam, compression_ratio=0.5, use_augmentation_teacher_guidance=False,
-                 loss_flags=None):
+                 structure_guidance_scale: float = 0.15, attention_floor: float = 0.05):
         super(StudentMyHeCo, self).__init__()
         self.hidden_dim = hidden_dim
         self.student_dim = int(hidden_dim * compression_ratio)
-        self.P = P  # Number of meta-paths
-        self.nei_num = nei_num  # Number of neighbor types for schema-level encoder
+        self.P = P 
+        self.nei_num = nei_num
         self.use_augmentation_teacher_guidance = use_augmentation_teacher_guidance
-        
-        # Loss control flags
-        self.loss_flags = loss_flags if loss_flags is not None else {
-            'use_student_contrast_loss': True,
-            'use_gate_entropy_loss': True
-        }
 
         # Compressed feature projection layers
         self.fc_list = nn.ModuleList([nn.Linear(feats_dim, self.student_dim, bias=True)
@@ -409,12 +433,14 @@ class StudentMyHeCo(nn.Module):
 
         # Projection layer to match teacher dimension for distillation
         self.teacher_projection = nn.Linear(self.student_dim, hidden_dim)
+        self.structure_guidance_scale = structure_guidance_scale
+        self.attention_floor = attention_floor
 
         # If using augmentation teacher guidance, initialize guidance integration layers
         if self.use_augmentation_teacher_guidance:
-            self._init_guidance_integration()
+            self._init_guidance_integration(structure_guidance_scale, attention_floor)
 
-    def _init_guidance_integration(self):
+    def _init_guidance_integration(self, structure_guidance_scale: float, attention_floor: float):
         """Initialize augmentation teacher guidance integration layers"""
         # Meta-path guidance integration
         self.mp_guidance_gate = nn.Sequential(
@@ -429,13 +455,15 @@ class StudentMyHeCo(nn.Module):
         )
         
         # Guidance fusion weights (learnable balance between student and middle teacher)
-        self.mp_fusion_weight = nn.Parameter(torch.tensor(0.3))  # Start with 30% middle teacher influence
-        self.sc_fusion_weight = nn.Parameter(torch.tensor(0.3))  # Start with 30% middle teacher influence
+        self.mp_fusion_weight = nn.Parameter(torch.tensor(-1.0)) 
+        self.sc_fusion_weight = nn.Parameter(torch.tensor(-1.0))
 
         # Persistent teacher->student projector layers to avoid creating layers inside forward
         # Teacher guidance embeddings typically come from hidden_dim space
         self.mp_teacher_to_student = nn.Linear(self.hidden_dim, self.student_dim)
         self.sc_teacher_to_student = nn.Linear(self.hidden_dim, self.student_dim)
+        self.structure_guidance_scale = structure_guidance_scale
+        self.attention_floor = attention_floor
 
     def forward(self, feats, pos, mps, nei_index, augmentation_teacher_guidance=None):
         """
@@ -458,37 +486,44 @@ class StudentMyHeCo(nn.Module):
             z_mp = self.mp(h_all[0], mps)
             z_sc = self.sc(h_all, nei_index)
             
-        # Base contrastive loss (CONTROLLED BY FLAG)
-        total_loss = torch.tensor(0.0, device=z_mp.device)
-        
-        if self.loss_flags.get('use_student_contrast_loss', True):
-            contrast_loss = self.contrast(z_mp, z_sc, pos)
-            total_loss += contrast_loss
-            
-        return total_loss
+        contrast_loss = self.contrast(z_mp, z_sc, pos)
+        return contrast_loss
 
     def _forward_with_guidance(self, h_input, adj_input, augmentation_teacher_guidance, module_type):
         """
-        Forward pass with augmentation teacher guidance integration
-        
+        Forward pass with augmentation teacher guidance integration.
+
         Args:
-            h_input: Input features (h for mp, h_all for sc)  
-            adj_input: Adjacency input (mps for mp, nei_index for sc)
-            augmentation_teacher_guidance: Guidance from augmentation teacher
-            module_type: 'mp' for meta-path, 'sc' for schema
+            h_input: Input features (tensor for meta-path or list for schema)
+            adj_input: Corresponding adjacency (meta-path matrices or neighbor indices)
+            augmentation_teacher_guidance: Guidance dictionary from augmentation teacher
+            module_type: 'mp' for meta-path encoder, 'sc' for schema encoder
         """
         if module_type == 'mp':
-            # Standard student forward pass
+            # Standard student forward pass through mp view
             student_output = self.mp(h_input, adj_input)
             
             # Get augmentation teacher guidance for meta-path
             if 'mp_guidance' in augmentation_teacher_guidance:
                 teacher_guidance = augmentation_teacher_guidance['mp_guidance']
+                aug_metadata = augmentation_teacher_guidance.get('augmentation_guidance')
+                attention_factor = None
+                structure_signal = None
+                if aug_metadata:
+                    if aug_metadata.get('attention_importance') is not None:
+                        attention_factor = aug_metadata['attention_importance'].detach().to(student_output.device)
+                        attention_factor = torch.clamp(attention_factor, min=self.attention_floor, max=1.0)
+                    if aug_metadata.get('structure_importance') is not None:
+                        structure_signal = aug_metadata['structure_importance'].detach().to(student_output.device)
+                
                 
                 # Ensure dimensions match
                 if teacher_guidance.size(-1) != self.student_dim:
                     # Project teacher guidance to student dimension using persistent layer
                     teacher_guidance = self.mp_teacher_to_student(teacher_guidance)
+                if structure_signal is not None:
+                    structure_signal = self.mp_teacher_to_student(structure_signal)
+                    teacher_guidance = teacher_guidance + self.structure_guidance_scale * structure_signal
                 
                 # Fuse student output with teacher guidance
                 fused_features = torch.cat([student_output, teacher_guidance], dim=-1)
@@ -496,6 +531,9 @@ class StudentMyHeCo(nn.Module):
                 
                 # Weighted fusion
                 fusion_weight = torch.sigmoid(self.mp_fusion_weight)
+                if attention_factor is not None:
+                    fusion_weight = fusion_weight * attention_factor
+                fusion_weight = torch.clamp(fusion_weight, min=self.attention_floor, max=1.0)
                 result = (1 - fusion_weight) * student_output + fusion_weight * teacher_guidance * guidance_gate
             else:
                 result = student_output
@@ -507,6 +545,16 @@ class StudentMyHeCo(nn.Module):
             # Get augmentation teacher guidance for schema
             if 'sc_guidance' in augmentation_teacher_guidance:
                 teacher_guidance = augmentation_teacher_guidance['sc_guidance']
+                aug_metadata = augmentation_teacher_guidance.get('augmentation_guidance')
+                attention_factor = None
+                schema_factor = None
+                if aug_metadata:
+                    if aug_metadata.get('attention_importance') is not None:
+                        attention_factor = aug_metadata['attention_importance'].detach().to(student_output.device)
+                        attention_factor = torch.clamp(attention_factor, min=self.attention_floor, max=1.0)
+                    if aug_metadata.get('sc_importance') is not None:
+                        schema_factor = aug_metadata['sc_importance'].detach().mean().unsqueeze(0).unsqueeze(0).to(student_output.device)
+                        schema_factor = torch.clamp(schema_factor, min=self.attention_floor, max=1.0)
                 
                 # Ensure dimensions match
                 if teacher_guidance.size(-1) != self.student_dim:
@@ -519,6 +567,11 @@ class StudentMyHeCo(nn.Module):
                 
                 # Weighted fusion
                 fusion_weight = torch.sigmoid(self.sc_fusion_weight)
+                if attention_factor is not None:
+                    fusion_weight = fusion_weight * attention_factor
+                if schema_factor is not None:
+                    fusion_weight = fusion_weight * schema_factor
+                fusion_weight = torch.clamp(fusion_weight, min=self.attention_floor, max=1.0)
                 result = (1 - fusion_weight) * student_output + fusion_weight * teacher_guidance * guidance_gate
             else:
                 result = student_output
@@ -585,9 +638,6 @@ def link_reconstruction_loss(embeddings, pos_edges, neg_edges, temperature=1.0):
         pos_edges: Positive edge indices [num_pos_edges, 2]
         neg_edges: Negative edge indices [num_neg_edges, 2]
         temperature: Temperature for scaling scores
-        
-    Returns:
-        Link reconstruction loss
     """
     if pos_edges is None or len(pos_edges) == 0:
         return torch.tensor(0.0, device=embeddings.device)
@@ -686,8 +736,6 @@ def sample_negative_edges(num_nodes, num_samples, existing_edges=None):
 class DualTeacherKD(nn.Module):
     """
     Knowledge Distillation Framework
-    
-    Teacher-Student knowledge distillation.
     """
     def __init__(self, teacher=None, student=None, augmentation_teacher=None):
         super(DualTeacherKD, self).__init__()
@@ -697,21 +745,34 @@ class DualTeacherKD(nn.Module):
         
         # Initialize prediction heads for knowledge alignment
         if self.student is not None and self.teacher is not None:
-            student_dim = getattr(self.student, 'student_dim', 64)
-            teacher_dim = getattr(self.teacher, 'hidden_dim', 128)
+            student_dim = getattr(self.student, 'student_dim', 32)
+            teacher_dim = getattr(self.teacher, 'hidden_dim', 64)
             
             # Knowledge alignment head
+            # Use simple projection to align student→teacher dimensions
             self.knowledge_alignment = nn.Sequential(
                 nn.Linear(student_dim, teacher_dim // 2),
                 nn.ReLU(),
-                nn.Linear(teacher_dim // 2, teacher_dim),
-                nn.LayerNorm(teacher_dim)
+                nn.Linear(teacher_dim // 2, teacher_dim)
             )
+            
+            # Complementary fusion gate: decides when to use middle teacher's robustness
+            # Input: concatenated main+middle teacher representations
+            # Output: fusion weight (0=main only, 1=balanced)
+            if self.augmentation_teacher is not None:
+                self.fusion_gate = nn.Sequential(
+                    nn.Linear(teacher_dim * 2, teacher_dim),
+                    nn.ReLU(),
+                    nn.Dropout(0.1),
+                    nn.Linear(teacher_dim, 1),
+                    nn.Sigmoid()  # Output between 0 and 1
+                )
     
     def forward(self):
         pass
     
-    def calc_knowledge_distillation_loss(self, feats, mps, nei_index, distill_config=None):
+    def calc_knowledge_distillation_loss(self, feats, mps, nei_index, distill_config=None,
+                                         augmentation_teacher_guidance=None):
         """Calculate knowledge distillation loss between teacher and student"""
         if self.teacher is None or self.student is None:
             return torch.tensor(0.0, device=feats[0].device)
@@ -720,40 +781,119 @@ class DualTeacherKD(nn.Module):
         with torch.no_grad():
             teacher_mp, teacher_sc = self.teacher.get_representations(feats, mps, nei_index)
             
-        student_mp, student_sc = self.student.get_representations(feats, mps, nei_index)
+        student_mp, student_sc = self.student.get_representations(
+            feats,
+            mps,
+            nei_index,
+            augmentation_teacher_guidance=augmentation_teacher_guidance
+        )
         
-        # Align dimensions using pre-initialized alignment head
-        # CRITICAL: knowledge_alignment must exist (initialized in __init__)
-        if not hasattr(self, 'knowledge_alignment'):
-            raise RuntimeError(
-                "knowledge_alignment head not initialized. "
-                "Ensure both teacher and student are provided to DualTeacherKD.__init__()"
-            )
-        
+        # Align student to teacher dimension
         student_mp_aligned = self.knowledge_alignment(student_mp)
         student_sc_aligned = self.knowledge_alignment(student_sc)
         
         # Temperature for soft targets
         temperature = distill_config.get('kd_temperature', 3.0) if distill_config else 3.0
         
-        # MSE loss on normalized embeddings (direct point-wise matching)
-        # Note: relational_kd_loss is called separately in train_student.py for structure preservation
-        mp_kd_loss = F.mse_loss(
-            F.normalize(student_mp_aligned, p=2, dim=1), 
-            F.normalize(teacher_mp, p=2, dim=1)
-        ) * (temperature ** 2)
-        
-        sc_kd_loss = F.mse_loss(
-            F.normalize(student_sc_aligned, p=2, dim=1), 
-            F.normalize(teacher_sc, p=2, dim=1)
-        ) * (temperature ** 2)
+        mp_kd_loss = F.mse_loss(student_mp_aligned, teacher_mp) * (temperature ** 2)
+        sc_kd_loss = F.mse_loss(student_sc_aligned, teacher_sc) * (temperature ** 2)
         
         return (mp_kd_loss + sc_kd_loss) * 0.5
+    
+    def calc_complementary_fusion_loss(self, feats, mps, nei_index, augmentation_guidance=None,
+                                         augmentation_teacher_guidance=None):
+        """
+        Calculate complementary fusion loss - combines main teacher's precision with middle teacher's robustness
+        
+        Instead of forcing alignment, identify WHERE middle teacher helps:
+        1. When teachers AGREE → trust main teacher (precise knowledge)
+        2. When teachers DISAGREE → use middle teacher (robustness knowledge)
+        """
+        if self.augmentation_teacher is None or self.teacher is None or self.student is None:
+            return torch.tensor(0.0, device=feats[0].device)
+        
+        # Get all representations
+        with torch.no_grad():
+            # Main teacher: precise knowledge on clean graphs
+            main_mp, main_sc = self.teacher.get_representations(feats, mps, nei_index)
+            
+            # Middle teacher: robust knowledge on augmented graphs
+            middle_mp, middle_sc = self.augmentation_teacher.get_representations(
+                feats, mps, nei_index, use_augmentation=True
+            )
+        
+        # Student representations (with guidance if enabled)
+        student_mp, student_sc = self.student.get_representations(
+            feats,
+            mps,
+            nei_index,
+            augmentation_teacher_guidance=augmentation_teacher_guidance
+        )
+        
+        # Align student to teacher dimension
+        if not hasattr(self, 'knowledge_alignment'):
+            raise RuntimeError("knowledge_alignment head not initialized")
+            
+        student_mp_aligned = self.knowledge_alignment(student_mp)
+        student_sc_aligned = self.knowledge_alignment(student_sc)
+        
+        # === COMPLEMENTARY KNOWLEDGE FUSION ===
+        
+        # 1. Measure teacher agreement (cosine similarity)
+        main_mp_norm = F.normalize(main_mp, p=2, dim=1)
+        middle_mp_norm = F.normalize(middle_mp, p=2, dim=1)
+        mp_agreement = (main_mp_norm * middle_mp_norm).sum(dim=1, keepdim=True)  # [N, 1]
+        
+        main_sc_norm = F.normalize(main_sc, p=2, dim=1)
+        middle_sc_norm = F.normalize(middle_sc, p=2, dim=1)
+        sc_agreement = (main_sc_norm * middle_sc_norm).sum(dim=1, keepdim=True)  # [N, 1]
+        
+        # 2. Compute adaptive fusion weights using learned gate
+        # High agreement → use main teacher (agreement close to 1)
+        # Low agreement → use middle teacher (agreement close to -1 or 0)
+        if hasattr(self, 'fusion_gate'):
+            mp_fusion_input = torch.cat([main_mp, middle_mp], dim=1)
+            mp_fusion_weight = self.fusion_gate(mp_fusion_input)  # [N, 1], range [0, 1]
+            
+            sc_fusion_input = torch.cat([main_sc, middle_sc], dim=1)
+            sc_fusion_weight = self.fusion_gate(sc_fusion_input)  # [N, 1]
+        else:
+            # Fallback: use agreement directly
+            # Transform agreement from [-1, 1] to weight [0, 1]
+            # High agreement (→1) → low middle weight (→0)
+            # Low agreement (→-1) → high middle weight (→1)
+            mp_fusion_weight = (1.0 - mp_agreement) * 0.5  # [N, 1]
+            sc_fusion_weight = (1.0 - sc_agreement) * 0.5  # [N, 1]
+        
+        # 3. Create fused targets that combine both teachers
+        # Fused = main_teacher * (1 - fusion_weight) + middle_teacher * fusion_weight
+        mp_fused_target = main_mp * (1.0 - mp_fusion_weight) + middle_mp * mp_fusion_weight
+        sc_fused_target = main_sc * (1.0 - sc_fusion_weight) + middle_sc * sc_fusion_weight
+        
+        # 4. Distill from fused targets (complementary knowledge)
+        mp_fusion_loss = F.mse_loss(student_mp_aligned, mp_fused_target)
+        sc_fusion_loss = F.mse_loss(student_sc_aligned, sc_fused_target)
+        
+        # 5. Add diversity regularization to encourage middle teacher to explore
+        # Penalize if middle teacher becomes too similar to main teacher
+        diversity_loss = torch.relu(mp_agreement.mean() - 0.7) + torch.relu(sc_agreement.mean() - 0.7)
+        
+        # Total complementary fusion loss
+        fusion_loss = (mp_fusion_loss + sc_fusion_loss) * 0.5 + diversity_loss * 0.1
+        
+        return fusion_loss
 
 
-def count_parameters(model):
-    """Count the number of trainable parameters in a model"""
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+def count_parameters(model, trainable_only: bool = False):
+    """Count parameters in a model.
+
+    Args:
+        model: nn.Module to inspect.
+        trainable_only: When True, only parameters with requires_grad=True are counted.
+    """
+    if trainable_only:
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return sum(p.numel() for p in model.parameters())
 
 
 def calculate_compression_ratio(teacher, student):

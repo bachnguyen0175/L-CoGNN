@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """
-Heterogeneous Graph Augmentation Module - Compatible with HeCo Architecture
-
-Supported augmentations:
-- Structure-Aware Meta-Path Connections (respects original graph topology)
+Heterogeneous Graph Augmentation Module
 """
 
 import torch
@@ -30,10 +27,9 @@ class MetaPathConnector(nn.Module):
             nn.Parameter(torch.randn(1, dim) * 0.1) for dim in feats_dim_list
         ])
         
-        # 🔧 FIX: Use LOW-RANK projection to reduce parameters dramatically
+        # Use LOW-RANK projection to reduce parameters dramatically
         # Instead of dim x dim projection, use dim -> low_rank_dim -> dim
         # This reduces params from O(d²) to O(2*d*k) where k << d
-        # For ACM: 7167² = 51M params → 2*7167*64 = 917K params (55x reduction!)
         self.connection_projections = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(dim, min(low_rank_dim, dim), bias=False),  # Bottleneck
@@ -41,7 +37,6 @@ class MetaPathConnector(nn.Module):
             ) for dim in feats_dim_list
         ])
         
-        # ADDED: Meta-path semantic attention
         # Input: propagated features (after projection, so dimension is dim not low_rank_dim)
         # Each meta-path can have different importance for augmentation
         if num_metapaths is not None and num_metapaths > 1:
@@ -71,7 +66,7 @@ class MetaPathConnector(nn.Module):
                 if isinstance(layer, nn.Linear):
                     nn.init.xavier_normal_(layer.weight, gain=1.0)
         
-        # Initialize meta-path attention (REQUIRED for multiple meta-paths)
+        # Initialize meta-path attention
         if self.metapath_attention is not None:
             for attn_module in self.metapath_attention:
                 for layer in attn_module:
@@ -81,19 +76,8 @@ class MetaPathConnector(nn.Module):
     def forward(self, feats: List[torch.Tensor], mps: List[torch.Tensor] = None) -> Tuple[List[torch.Tensor], Dict]:
         """
         Apply meta-path connections respecting original graph structure
-        
-        NO FALLBACK: Meta-paths MUST be provided
-        
-        Args:
-            feats: List of node features for each type (e.g., [paper_feat, author_feat, subject_feat])
-            mps: REQUIRED - Meta-path adjacency matrices for the PRIMARY node type (e.g., paper nodes)
-                 In heterogeneous graphs, meta-paths are typically defined for target nodes only
-            
-        Returns:
-            connected_feats: Features with meta-path connections
-            connection_info: Information about the connections made
         """
-        # Validate inputs - NO FALLBACK
+        # Validate inputs
         assert mps is not None, "Meta-paths (mps) are REQUIRED for structure-aware augmentation"
         assert isinstance(mps, list) or isinstance(mps, tuple), "mps must be a list/tuple of meta-path matrices"
         
@@ -101,7 +85,7 @@ class MetaPathConnector(nn.Module):
         connection_info = {
             'meta_path_connections': [],
             'connection_matrices': [],
-            'structure_preserved': True  # Always true in NO FALLBACK mode
+            'structure_preserved': True  # Always true in structure-aware mode
         }
         
         # Apply meta-path connections to PRIMARY node type only (typically feat_idx=0)
@@ -135,35 +119,23 @@ class MetaPathConnector(nn.Module):
                                          mps: List[torch.Tensor] = None) -> torch.Tensor:
         """
         Apply meta-path connections that respect the original graph structure
-        IMPROVED: Added semantic-level attention for multiple meta-paths (à la HAN)
-        NO FALLBACK: Always uses low-rank projection and proper meta-path propagation
-        
-        Args:
-            feat: Node features for this type
-            feat_idx: Index of the feature type
-            mps: Meta-path adjacency matrices (REQUIRED - must provide meta-paths)
         """
-        # Validate inputs - NO FALLBACK allowed
+        # Validate inputs
         assert feat_idx < len(self.meta_path_embeddings), \
             f"feat_idx {feat_idx} out of range for meta_path_embeddings (size {len(self.meta_path_embeddings)})"
         
-        # Project features using LOW-RANK projection (NO FALLBACK to full projection)
+        # Project features using LOW-RANK projection
         projected_feat = self.connection_projections[feat_idx](feat)
         
         # REQUIREMENT: Meta-paths MUST be provided for augmentation to work
-        assert mps is not None, "Meta-paths (mps) are required for structure-aware augmentation. NO FALLBACK."
-        
-        # For heterogeneous graphs, mps is typically a list of meta-path matrices for PRIMARY nodes
-        # We use mps directly (not indexed by feat_idx) since all meta-paths are for the same target type
-        # e.g., ACM dataset: mps = [PAP_matrix, PSP_matrix] both for paper nodes
+        assert mps is not None, "Meta-paths (mps) are required for structure-aware augmentation."
         
         # If mps is provided as single-element list wrapping multiple paths, handle it
         if len(mps) == 1 and isinstance(mps[0], list):
             meta_path_matrix = mps[0]  # Unwrap
         else:
             meta_path_matrix = mps  # Use directly
-        
-        # IMPROVED: Handle multiple meta-paths with semantic-level attention
+    
         # Check if mps[feat_idx] is a single matrix or list of matrices
         if isinstance(meta_path_matrix, list):
             # Multiple meta-paths: aggregate with attention (à la HAN)
@@ -191,8 +163,7 @@ class MetaPathConnector(nn.Module):
                 gate = torch.sigmoid(self.meta_path_embeddings[feat_idx])
                 meta_signal = self.connection_strength * (propagated * gate)
             else:
-                # Multiple meta-paths: ALWAYS use semantic-level attention (à la HAN)
-                # NO FALLBACK to simple averaging
+                # Multiple meta-paths
                 assert self.metapath_attention is not None, \
                     "Meta-path attention required for multiple meta-paths. Initialize with num_metapaths > 1."
                 assert feat_idx < len(self.metapath_attention), \
@@ -222,7 +193,7 @@ class MetaPathConnector(nn.Module):
                 meta_signal = self.connection_strength * (propagated * gate)
         else:
             # Single meta-path matrix (tensor, not list)
-            # Validate dimension compatibility - NO FALLBACK
+            # Validate dimension compatibility
             assert meta_path_matrix.size(1) == feat.size(0), \
                 f"Meta-path dimension mismatch: matrix.size(1)={meta_path_matrix.size(1)} != feat.size(0)={feat.size(0)}"
             
@@ -240,18 +211,12 @@ class MetaPathConnector(nn.Module):
             gate = torch.sigmoid(self.meta_path_embeddings[feat_idx])  # [1, feat_dim]
             meta_signal = self.connection_strength * (propagated * gate)
         
-        # IMPROVED: Use initial residual à la GCNII to prevent over-smoothing
-        # Formula: (1 + alpha) * feat + (1 - alpha) * meta_signal
-        # Where alpha ∈ [0.1, 0.2] controls the strength of initial residual connection
+        # alpha ∈ [0.1, 0.2] controls the strength of initial residual connection
         # This preserves more original features while adding meta-path information
         alpha = 0.15  # Can be made learnable if needed
         connected_feat = (1 + alpha) * feat + (1 - alpha) * meta_signal
         
         return connected_feat
-    
-    # 🚫 REMOVED: _apply_local_meta_connections
-    # NO FALLBACK - Meta-paths are REQUIRED for structure-aware augmentation
-    # This ensures the paper's claims about structure-aware augmentation are always valid
     
     def get_connection_strength(self) -> float:
         """Get current connection strength"""
@@ -262,28 +227,22 @@ class MetaPathConnector(nn.Module):
         self.connection_strength = max(0.0, min(1.0, strength))  # Clamp between 0 and 1
 
 
-
-
-
-
 class HeteroAugmentationPipeline(nn.Module):
     """
     Heterogeneous graph augmentation pipeline with:
     - Structure-Aware Meta-Path Connections (respects original graph topology)
     - Low-Rank Projections for parameter efficiency
     - Semantic-level Meta-Path Attention
-    
-    NO FALLBACK: Always uses proper meta-path augmentation
     """
     def __init__(self, feats_dim_list: List[int], augmentation_config: Dict[str, Any] = None):
         super(HeteroAugmentationPipeline, self).__init__()
         
         # Default configuration - Meta-path connections ALWAYS enabled
         default_config = {
-            'use_meta_path_connections': True,  # ALWAYS True, no fallback
+            'use_meta_path_connections': True,
             'connection_strength': 0.1,
-            'low_rank_dim': 64,  # Low-rank dimension for parameter efficiency
-            'num_metapaths': 2   # Default to 2 meta-paths (e.g., ACM: PAP, PSP)
+            'low_rank_dim': 64,
+            'num_metapaths': 2
         }
         
         # Merge default_config with augmentation_config (augmentation_config overrides defaults)
@@ -291,7 +250,7 @@ class HeteroAugmentationPipeline(nn.Module):
         
         # Validate configuration
         assert self.config.get('use_meta_path_connections', True), \
-            "Meta-path connections must be enabled. NO FALLBACK mode."
+            "Meta-path connections must be enabled."
         assert self.config.get('num_metapaths') is not None and self.config.get('num_metapaths') > 0, \
             "num_metapaths must be specified and > 0 for proper meta-path augmentation"
         
@@ -306,26 +265,13 @@ class HeteroAugmentationPipeline(nn.Module):
     def forward(self, feats: List[torch.Tensor], mps=None) -> Tuple[List[torch.Tensor], Dict]:
         """
         Apply augmentation pipeline: Structure-aware meta-path connections with low-rank projections
-        
-        NO FALLBACK: Meta-paths MUST be provided for proper augmentation
-        
-        Args:
-            feats: List of node features for each node type
-            mps: REQUIRED list of meta-path adjacency matrices for structure-aware connections
-                 Must provide valid meta-path matrices matching the architecture
-        
-        Returns:
-            aug_feats: Augmented node features
-            aug_info: Dictionary containing augmentation information
         """
-        # Validate inputs - NO FALLBACK
         assert mps is not None, \
-            "Meta-paths (mps) are REQUIRED for structure-aware augmentation. NO FALLBACK mode."
+            "Meta-paths (mps) are REQUIRED for structure-aware augmentation"
         assert isinstance(mps, list), \
             f"mps must be a list of meta-path matrices, got {type(mps)}"
         
         # Apply meta-path connections with low-rank projections
-        # This ALWAYS uses the proper structure-aware augmentation
         aug_feats, connection_info = self.meta_path_connector(feats, mps)
         aug_info = {'connection_info': connection_info}
         

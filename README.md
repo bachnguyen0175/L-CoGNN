@@ -119,6 +119,10 @@ KD-HGRL is a comprehensive framework for **Knowledge Distillation in Heterogeneo
 git clone https://github.com/bachnguyen0175/L-CoGNN.git
 cd L-CoGNN
 
+# Install PyTorch (Required first)
+# Visit https://pytorch.org/get-started/locally/ for your specific command
+pip install torch==2.1.2 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
 # Install dependencies
 pip install -r requirements.txt
 
@@ -206,57 +210,59 @@ bash 4_evaluate.sh             # Stage 4: Comprehensive evaluation (~5 min)
 L-CoGNN/
 ├── 📋 README.md                     # This file
 ├── ⚙️ requirements.txt             # Dependencies
-├── 🐍 main.py                      # Entry point (future CLI)
+├── 🐍 main.py                      # Entry point (Placeholder)
 │
-├── 🧠 code/models/                 # Neural Network Models
-│   ├── kd_heco.py                  # Core architectures
-│   │   ├── MyHeCo                  # Main teacher model
-│   │   ├── AugmentationTeacher     # Augmentation teacher (same size)
-│   │   ├── StudentMyHeCo           # Compressed student (50%)
-│   │   └── DualTeacherKD           # KD framework coordinator
-│   ├── contrast.py                 # Contrastive learning module
-│   ├── sc_encoder.py               # Schema-level attention encoder
-│   └── kd_params.py                # Model & training configurations
+├── 🧠 code/
+│   ├── average_evaluations.py      # Result aggregation script
+│   ├── visualize_results.py        # Result visualization script
+│   │
+│   ├── models/                     # Neural Network Models
+│   │   ├── kd_heco.py              # Main HeCo architecture
+│   │   ├── contrast.py             # Contrastive learning
+│   │   ├── sc_encoder.py           # Semantic attention encoder
+│   │   └── kd_params.py            # Model configurations
+│   │
+│   ├── training/                   # Training Scripts
+│   │   ├── pretrain_teacher.py     # Stage 1: Teacher training
+│   │   ├── train_middle_teacher.py # Stage 2: Middle teacher
+│   │   ├── train_student.py        # Stage 3: Student training
+│   │   └── hetero_augmentations.py # Graph augmentations
+│   │
+│   ├── evaluation/                 # Evaluation Tools
+│   │   ├── comprehensive_evaluation.py # Multi-task evaluation
+│   │   └── evaluate_kd.py          # KD-specific evaluation
+│   │
+│   ├── utils/                      # Utility Functions
+│   │   ├── load_data.py            # Data loading utilities
+│   │   ├── evaluate.py             # Evaluation metrics
+│   │   ├── logreg.py               # Logistic regression
+│   │   ├── create_custom_splits.py # Split generation
+│   │   └── inspect_data.py         # Data inspection
+│   │
+│   ├── scripts/                    # Executable Scripts
+│   │   ├── 1_train_teacher.sh      # Teacher training
+│   │   ├── 2_train_middle_teacher.sh # Middle teacher training
+│   │   ├── 3_train_student.sh      # Student training
+│   │   ├── 4_evaluate.sh           # Comprehensive evaluation
+│   │   └── run_all.sh              # Complete pipeline
+│   │
+│   ├── experiments/                # Experiment Configurations
+│   │   └── configs/                # YAML configuration files
+│   │       ├── acm.yaml            # ACM dataset config
+│   │       └── dblp.yaml           # DBLP dataset config
+│   │
+│   └── tests/                      # Unit Tests & Verification
+│       ├── test_imports.py         # Import validation
+│       ├── test_ratio_load.py      # Data split verification
+│       ├── verify_data_loading.py  # Data loading verification
+│       ├── code_path_verification.py # Path checking
+│       └── analyze_model_architecture.py # Model inspection
 │
-├── 🎓 code/training/               # Training Scripts
-│   ├── pretrain_teacher.py         # Stage 1: Main teacher
-│   ├── train_middle_teacher.py     # Stage 2: Augmentation teacher
-│   ├── train_student.py            # Stage 3: Dual-teacher student
-│   └── hetero_augmentations.py     # Graph augmentation techniques
-│
-├── 📊 code/evaluation/             # Evaluation Tools
-│   ├── comprehensive_evaluation.py # Multi-task evaluation
-│   └── evaluate_kd.py              # KD-specific metrics
-│
-├── 🔧 code/utils/                  # Utility Functions
-│   ├── load_data.py                # Data loading
-│   ├── evaluate.py                 # Evaluation metrics
-│   └── logreg.py                   # Logistic regression
-│
-├── 🚀 code/scripts/                # Shell Scripts
-│   ├── 1_train_teacher.sh          # Train main teacher
-│   ├── 2_train_middle_teacher.sh   # Train augmentation teacher
-│   ├── 3_train_student.sh          # Train student (dual-teacher)
-│   ├── 4_evaluate.sh               # Comprehensive evaluation
-│   └── run_all.sh                  # Complete pipeline
-│
-├── 🧪 code/experiments/            # Experiment Configurations
-│   ├── configs/                    # YAML configurations
-│   └── ablation/                   # Ablation studies
-│
-├── 📁 data/                        # Datasets
-│   ├── acm/                        # ACM dataset
-│   ├── dblp/                       # DBLP dataset
-│   ├── aminer/                     # AMiner dataset
-│   └── freebase/                   # Freebase dataset
-│
-├── 📈 results/                     # Model Checkpoints
-│   ├── teacher_heco_*.pkl          # Main teacher (100%)
-│   ├── middle_teacher_heco_*.pkl   # Augmentation teacher (100%)
-│   └── student_heco_*.pkl          # Student (50%)
-│
-└── 🧪 code/tests/                  # Unit Tests
-    └── test_imports.py             # Import validation
+└── 📚 data/                        # Dataset Files
+    ├── acm/                        # ACM dataset
+    ├── dblp/                       # DBLP dataset
+    ├── aminer/                     # AMiner dataset
+    └── freebase/                   # Freebase dataset
 ```
 
 ## 🎯 Usage Guide
@@ -348,23 +354,14 @@ python evaluate_kd.py \
     --student_model_path ../../results/student_heco_acm.pkl
 ```
 
-**Analyzes**:
-- Knowledge transfer quality
-- Representation similarity
-- Layer-wise distillation effectiveness
+### Configuration-Based Training
 
-### Key Training Parameters
+Use YAML configuration files for reproducible experiments:
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--student_compression_ratio` | 0.5 | Student size relative to teacher (0.5 = 50%) |
-| `--main_distill_weight` | 1.0 | Weight for main teacher KD loss |
-| `--augmentation_weight` | 0.5 | Weight for augmentation alignment |
-| `--link_recon_weight` | 0.1 | Weight for link reconstruction |
-| `--use_kd_loss` | True | Enable/disable KD from main teacher |
-| `--use_augmentation_alignment_loss` | True | Enable/disable augmentation guidance |
-| `--use_link_recon_loss` | False | Enable/disable link reconstruction |
-| `--use_student_contrast_loss` | True | Enable/disable student self-learning |
+```bash
+# Example: ACM dataset configuration
+python main.py --config code/experiments/configs/acm.yaml  # Future feature (Currently main.py is a placeholder)
+```
 
 ## 📊 Datasets
 

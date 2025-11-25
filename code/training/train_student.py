@@ -9,8 +9,11 @@ import numpy as np
 import sys
 from tqdm.auto import tqdm
 
-# Add utils to path
-sys.path.append('./utils')
+# Add utils to path relative to this file so imports work regardless of cwd
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_UTILS_DIR = os.path.abspath(os.path.join(_SCRIPT_DIR, '..', 'utils'))
+if _UTILS_DIR not in sys.path:
+    sys.path.insert(0, _UTILS_DIR)
 
 from models.kd_heco import AugmentationTeacher, StudentMyHeCo, DualTeacherKD, count_parameters
 from models.kd_params import kd_params, get_distillation_config, get_augmentation_config
@@ -21,25 +24,12 @@ from utils.evaluate import evaluate_node_classification
 class StudentTrainer:
     def __init__(self, args):
         self.args = args
-        self.device = torch.device(f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu')
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA device is required for student training. Please run on a GPU-enabled machine.")
+        self.device = torch.device(f'cuda:{args.gpu}')
         
         # Load data
         print(f"Loading {args.dataset} dataset...")
-
-        # Set dataset-specific parameters if not already set
-        if not hasattr(args, 'type_num'):
-            if args.dataset == "acm":
-                args.type_num = [4019, 7167, 60]  # [paper, author, subject]
-                args.nei_num = 2
-            elif args.dataset == "dblp":
-                args.type_num = [4057, 14328, 7723, 20]  # [paper, author, conference, term]
-                args.nei_num = 3
-            elif args.dataset == "aminer":
-                args.type_num = [6564, 13329, 35890]  # [paper, author, reference]
-                args.nei_num = 2
-            elif args.dataset == "freebase":
-                args.type_num = [3492, 2502, 33401, 4459]  # [movie, director, actor, writer]
-                args.nei_num = 3
 
         self.nei_index, self.feats, self.mps, self.pos, self.label, self.idx_train, self.idx_val, self.idx_test = load_data(args.dataset, args.ratio, args.type_num)
         
@@ -59,6 +49,10 @@ class StudentTrainer:
         
         # Set up augmentation config for middle teacher
         self.augmentation_config = get_augmentation_config(args)
+        
+        # Adaptive weighting for dual-teacher conflict resolution
+        self.teacher_agreement_history = []
+        self.adaptive_aug_weight = args.augmentation_weight  # Start with config value
         
         # Initialize models
         self.init_models()
@@ -98,7 +92,9 @@ class StudentTrainer:
         ).to(self.device)
 
         # Load teacher checkpoint
-        teacher_path = os.path.abspath(self.args.teacher_model_path) if hasattr(self.args, 'teacher_model_path') else None
+        teacher_path = None
+        if getattr(self.args, 'teacher_model_path', None):
+            teacher_path = os.path.abspath(self.args.teacher_model_path)
         if teacher_path and os.path.exists(teacher_path):
             teacher_checkpoint = torch.load(teacher_path, map_location=self.device)
             if 'model_state_dict' in teacher_checkpoint:
@@ -106,14 +102,17 @@ class StudentTrainer:
             else:
                 self.teacher.load_state_dict(teacher_checkpoint)
             print(f"Loaded main teacher from: {teacher_path}")
+            for param in self.teacher.parameters():
+                param.requires_grad_(False)
+            self.teacher.eval()
         else:
             print("Warning: No main teacher model found. Training without knowledge distillation.")
             self.teacher = None
         
-        # Load pre-trained middle teacher (augmentation trained on augmented graphs)
+        # Load pre-trained middle teacher (augmentation trained on augmented meta-path graphs)
         print("Loading pre-trained augmentation teacher...")
         
-        self.middle_teacher = AugmentationTeacher(  # Name kept for compatibility
+        self.middle_teacher = AugmentationTeacher(
             feats_dim_list=self.feats_dim_list,
             hidden_dim=self.args.hidden_dim,
             attn_drop=self.args.attn_drop,
@@ -127,7 +126,9 @@ class StudentTrainer:
         ).to(self.device)
 
         # Load middle teacher checkpoint - handle compression dimension mismatch
-        middle_teacher_path = os.path.abspath(self.args.middle_teacher_path) if hasattr(self.args, 'middle_teacher_path') else None
+        middle_teacher_path = None
+        if getattr(self.args, 'middle_teacher_path', None):
+            middle_teacher_path = os.path.abspath(self.args.middle_teacher_path)
         if middle_teacher_path and os.path.exists(middle_teacher_path):
             middle_checkpoint = torch.load(middle_teacher_path, map_location=self.device)
             
@@ -138,6 +139,9 @@ class StudentTrainer:
                 else:
                     self.middle_teacher.load_state_dict(middle_checkpoint)
                 print(f"Loaded middle teacher from: {middle_teacher_path}")
+                for param in self.middle_teacher.parameters():
+                    param.requires_grad_(False)
+                self.middle_teacher.eval()
             except RuntimeError as e:
                 raise e
         else:
@@ -146,11 +150,6 @@ class StudentTrainer:
 
         # Initialize student model with simplified dual-teacher guidance
         use_augmentation_teacher_guidance = self.middle_teacher is not None
-        
-        # Prepare loss flags for student
-        student_loss_flags = {
-            'use_student_contrast_loss': self.args.use_student_contrast_loss,
-        }
         
         self.student = StudentMyHeCo(
             hidden_dim=self.args.hidden_dim,
@@ -164,7 +163,8 @@ class StudentTrainer:
             lam=self.args.lam,
             compression_ratio=self.args.student_compression_ratio,
             use_augmentation_teacher_guidance=use_augmentation_teacher_guidance,
-            loss_flags=student_loss_flags
+            structure_guidance_scale=self.args.augmentation_structure_scale,
+            attention_floor=self.args.augmentation_attention_floor
         ).to(self.device)
 
         self.kd_framework = DualTeacherKD(
@@ -174,22 +174,25 @@ class StudentTrainer:
         ).to(self.device)  # Move to GPU!
         
         # Add KD framework parameters to optimizer if it has trainable parameters
-        kd_params = list(self.kd_framework.parameters())
+        student_params = list(self.student.parameters())
+        student_param_ids = {id(p) for p in student_params}
+        kd_params = []
+
+        if hasattr(self.kd_framework, 'knowledge_alignment'):
+            kd_params = [
+                p for p in self.kd_framework.knowledge_alignment.parameters()
+                if id(p) not in student_param_ids
+            ]
+
+        param_groups = [{'params': student_params}]
         if kd_params:
-            # Create optimizer with both student and KD framework parameters
-            all_params = list(self.student.parameters()) + kd_params
-            self.optimizer = torch.optim.Adam(
-                all_params, 
-                lr=self.args.lr, 
-                weight_decay=self.args.l2_coef
-            )
-        else:
-            # Fallback: optimize student only
-            self.optimizer = torch.optim.Adam(
-                self.student.parameters(), 
-                lr=self.args.lr, 
-                weight_decay=self.args.l2_coef
-            )
+            param_groups.append({'params': kd_params})
+
+        self.optimizer = torch.optim.Adam(
+            param_groups,
+            lr=self.args.lr,
+            weight_decay=self.args.l2_coef
+        )
         
         # Print model info
         if self.teacher:
@@ -211,14 +214,81 @@ class StudentTrainer:
         
         # Print dual-teacher mode info
         if self.teacher and self.middle_teacher:
-            print("🚀 Dual-Teacher Mode: Main teacher (knowledge distillation) + Augmentation (robustness)")
+            print("Dual-Teacher Mode: Main teacher (knowledge distillation) + Augmentation (robustness)")
+            print(f"   Initial weights: main={self.args.main_distill_weight:.2f}, aug={self.args.augmentation_weight:.2f}")
         elif self.teacher:
-            print("📚 Knowledge Distillation Mode: Main teacher only")
+            print("Knowledge Distillation Mode: Main teacher only")
         elif self.middle_teacher:
-            print("🔄 Augmentation Guidance Mode: Augmentation only")
+            print("Augmentation Guidance Mode: Augmentation only")
         else:
-            print("🎯 Self-Training Mode: No teacher guidance")
+            print("Self-Training Mode: No teacher guidance")
+
+    def _compute_teacher_weights(self, epoch: int):
+        """Compute adaptive weights for main KD and complementary fusion losses.
+        
+        Strategy: Start with main teacher, gradually increase middle teacher
+        - Early epochs: Focus on main teacher's precise knowledge (aug_weight low)
+        - Later epochs: Increase middle teacher's robustness contribution (aug_weight high)
+        
+        This allows student to first learn basics, then refine with robustness.
+        """
+        has_main = bool(self.teacher and self.args.use_kd_loss)
+        has_aug = bool(self.middle_teacher and self.args.use_augmentation_alignment_loss)
+
+        if not has_main and not has_aug:
+            return 0.0, 0.0
+
+        if not (has_main and has_aug):
+            main_weight = self.args.main_distill_weight if has_main else 0.0
+            aug_weight = self.args.augmentation_weight if has_aug else 0.0
+            return main_weight, aug_weight
+
+        # Complementary fusion warmup: increase middle teacher weight over time
+        warmup_span = max(1, self.args.stage2_epochs // 2)  # Use half of epochs for warmup
+        progress = min(1.0, epoch / warmup_span)
+
+        # Main teacher: constant weight (always provide base knowledge)
+        main_weight = self.args.main_distill_weight
+        
+        # Middle teacher: ramp up from 0.3x to 1.5x base weight
+        # This makes middle teacher increasingly important as training progresses
+        aug_weight = self.args.augmentation_weight * (0.3 + 1.2 * progress)
+        
+        return main_weight, aug_weight
     
+    def _prepare_augmentation_teacher_guidance(self):
+        """Collect augmentation teacher guidance for student and alignment losses."""
+        if not self.middle_teacher:
+            return None, None
+
+        guidance_payload = None
+
+        with torch.no_grad():
+            augmentation_guidance = self.middle_teacher.get_augmentation_guidance(
+                self.feats, self.mps, self.nei_index
+            )
+
+            was_training = self.middle_teacher.training
+            self.middle_teacher.eval()
+            try:
+                mp_guidance, sc_guidance = self.middle_teacher.get_representations(
+                    self.feats, self.mps, self.nei_index, use_augmentation=True
+                )
+            finally:
+                if was_training:
+                    self.middle_teacher.train()
+
+        if self.student.use_augmentation_teacher_guidance:
+            guidance_payload = {
+                'mp_guidance': mp_guidance.detach(),
+                'sc_guidance': sc_guidance.detach(),
+                'augmentation_guidance': augmentation_guidance
+            }
+        else:
+            guidance_payload = {'augmentation_guidance': augmentation_guidance}
+
+        return guidance_payload, augmentation_guidance
+
     def train_epoch(self, epoch=0):
         """Train for one epoch using enhanced dual-teacher framework with proper distillation"""
         self.student.train()
@@ -231,64 +301,53 @@ class StudentTrainer:
             
         self.optimizer.zero_grad()
         
-        # Get augmentation guidance from middle teacher (augmentation)
-        augmentation_guidance = None
-        augmentation_alignment_loss = torch.tensor(0.0, device=self.device)
-        if self.middle_teacher and self.args.use_augmentation_alignment_loss:
-            with torch.no_grad():
-                # Get comprehensive augmentation guidance
-                augmentation_guidance = self.middle_teacher.get_augmentation_guidance(
-                    self.feats, self.mps, self.nei_index
-                )
+        augmentation_teacher_guidance, augmentation_guidance = self._prepare_augmentation_teacher_guidance()
+        complementary_fusion_loss = torch.tensor(0.0, device=self.device)
 
-            # Calculate augmentation alignment loss for better guidance learning
-            if hasattr(self.kd_framework, 'calc_augmentation_alignment_loss'):
-                augmentation_alignment_loss = self.kd_framework.calc_augmentation_alignment_loss(
-                    self.feats, self.mps, self.nei_index, augmentation_guidance
+        # Use complementary fusion loss instead of simple alignment
+        # This makes middle teacher ESSENTIAL by providing robustness where main teacher is uncertain
+        if self.middle_teacher and self.args.use_augmentation_alignment_loss and augmentation_guidance is not None:
+            if hasattr(self.kd_framework, 'calc_complementary_fusion_loss'):
+                complementary_fusion_loss = self.kd_framework.calc_complementary_fusion_loss(
+                    self.feats,
+                    self.mps,
+                    self.nei_index,
+                    augmentation_guidance,
+                    augmentation_teacher_guidance=augmentation_teacher_guidance
                 )
         
         # 2. Forward pass - student loss with augmentation guidance
-        # Clarified terminology - middle teacher provides AUGMENTATION guidance
-        augmentation_teacher_guidance = None
-        if self.middle_teacher and self.student.use_augmentation_teacher_guidance:
-            with torch.no_grad():
-                # Get detailed representations from augmentation (middle teacher)
-                mp_guidance, sc_guidance = self.middle_teacher.get_representations(
-                    self.feats, self.mps, self.nei_index, use_augmentation=True
-                )
-                augmentation_teacher_guidance = {
-                    'mp_guidance': mp_guidance.detach(),  # Augmented meta-path embeddings
-                    'sc_guidance': sc_guidance.detach(),  # Augmented schema embeddings
-                    'augmentation_guidance': augmentation_guidance  # Structural guidance from augmentation
-                }
-        
         student_loss = self.student(self.feats, self.pos, self.mps, self.nei_index, 
                                    augmentation_teacher_guidance=augmentation_teacher_guidance)
         
-        # 3. Knowledge distillation from main teacher ONLY
-        # Clarified roles - Main teacher for KD, Middle teacher for augmentation guidance only
+        # 3. Knowledge distillation from main teacher
         kd_loss = torch.tensor(0.0, device=self.device)
         
-        # Main teacher: Pure knowledge distillation - CONTROLLED BY FLAG
+        # Main teacher
         if self.teacher and self.args.use_kd_loss:
             if hasattr(self.kd_framework, 'calc_knowledge_distillation_loss'):
+                # Standard embedding-level KD
                 kd_loss = self.kd_framework.calc_knowledge_distillation_loss(
-                    self.feats, self.mps, self.nei_index, distill_config=get_distillation_config(self.args),
+                    self.feats,
+                    self.mps,
+                    self.nei_index,
+                    distill_config=get_distillation_config(self.args),
+                    augmentation_teacher_guidance=augmentation_teacher_guidance
                 )
             else:
                 print("No distillation method found in KD framework.")
         
-        # 4.5. Link prediction losses for better edge modeling - CONTROLLED BY FLAGS
+        # 4. Link prediction losses for better edge modeling
         link_recon_loss = torch.tensor(0.0, device=self.device)
         student_embeds = None
         
-        # Link reconstruction loss on student embeddings - CONTROLLED BY FLAG
+        # Link reconstruction loss on student embeddings
         if self.args.use_link_recon_loss and (epoch % 5 == 0 or epoch < 50):
             try:
                 from models.kd_heco import (link_reconstruction_loss,
                                             sample_edges_from_metapaths, sample_negative_edges)
 
-                # Get student embeddings (reuse if already computed)
+                # Get student embeddings
                 if student_embeds is None:
                     student_embeds = self.student.get_embeds(self.feats, self.mps, detach=False)
                 
@@ -310,55 +369,60 @@ class StudentTrainer:
                     )
                 else:
                     if epoch == 0:
-                        print("⚠️ Warning: No edges sampled from meta-paths!")
+                        print("Warning: No edges sampled from meta-paths!")
             except Exception as e:
                 if epoch == 0 or epoch % 50 == 0:
-                    print(f"⚠️ Warning: Link reconstruction error at epoch {epoch}: {e}")
+                    print(f"Warning: Link reconstruction error at epoch {epoch}: {e}")
     
-        total_loss = 0
-        # giải thích phần này
-        total_loss += student_loss
-        
-        # Role assignment:
-        # - Main teacher: Knowledge distillation (learned representations from clean data)
-        # - Middle teacher: Augmentation guidance (structural hints from augmented data)
-        if self.teacher and self.middle_teacher:
-            # Main teacher: Primary knowledge distillation (full weight)
-            main_kd_weight = self.args.main_distill_weight
-            augmentation_guidance_weight = self.args.augmentation_weight
-            
-            total_loss += main_kd_weight * kd_loss  # Main teacher KD
-            total_loss += augmentation_guidance_weight * augmentation_alignment_loss  # Augmentation guidance from middle teacher
+        main_kd_weight, aug_guidance_weight = self._compute_teacher_weights(epoch)
 
-        elif self.teacher:
-            total_loss += self.args.main_distill_weight * kd_loss
-            
-        elif self.middle_teacher:
-            total_loss += self.args.augmentation_weight * augmentation_alignment_loss
+        total_loss = student_loss
         
-        # Link reconstruction loss for explicit edge modeling
+        if self.teacher and self.args.use_kd_loss:
+            total_loss += main_kd_weight * kd_loss  # Main teacher embedding KD
+        
+        # Use complementary fusion instead of simple alignment
+        # Middle teacher now provides ESSENTIAL robustness knowledge
+        if self.middle_teacher and self.args.use_augmentation_alignment_loss:
+            total_loss += aug_guidance_weight * complementary_fusion_loss
+
         if link_recon_loss > 0:
             total_loss += self.args.link_recon_weight * link_recon_loss
 
         # Backward pass
         total_loss.backward()
         self.optimizer.step()
+        fusion_mp, fusion_sc = self.student.get_guidance_fusion_weights()
         
         return (total_loss.item(), student_loss.item(), kd_loss.item(), 
-                augmentation_alignment_loss.item(), link_recon_loss.item())
+                complementary_fusion_loss.item(), link_recon_loss.item(),
+                main_kd_weight, aug_guidance_weight,
+                fusion_mp, fusion_sc)
     
     def validate(self):
         """Validate the model"""
+        augmentation_teacher_guidance, _ = self._prepare_augmentation_teacher_guidance()
         self.student.eval()
         with torch.no_grad():
-            val_loss = self.student(self.feats, self.pos, self.mps, self.nei_index)
+            val_loss = self.student(
+                self.feats,
+                self.pos,
+                self.mps,
+                self.nei_index,
+                augmentation_teacher_guidance=augmentation_teacher_guidance
+            )
         return val_loss.item()
     
     def evaluate_downstream(self):
         """Evaluate on downstream node classification task"""
+        augmentation_teacher_guidance, _ = self._prepare_augmentation_teacher_guidance()
         self.student.eval()
         with torch.no_grad():
-            embeds = self.student.get_embeds(self.feats, self.mps)
+            embeds = self.student.get_embeds(
+                self.feats,
+                self.mps,
+                augmentation_teacher_guidance=augmentation_teacher_guidance
+            )
             
         # Evaluate on first train/val/test split
         accuracy, macro_f1, micro_f1 = evaluate_node_classification(
@@ -381,7 +445,9 @@ class StudentTrainer:
             'args': self.args,
             'augmentation_config': self.augmentation_config,
             'guidance_enabled': self.student.use_augmentation_teacher_guidance,
-            'compression_ratio': self.args.student_compression_ratio
+            'compression_ratio': self.args.student_compression_ratio,
+            'structure_guidance_scale': getattr(self.student, 'structure_guidance_scale', None),
+            'attention_floor': getattr(self.student, 'attention_floor', None)
         }
         
         # Save regular checkpoint
@@ -409,28 +475,37 @@ class StudentTrainer:
             np.random.seed(self.args.seed + epoch)
             loss_tuple = self.train_epoch(epoch=epoch)
 
-            total_loss, student_loss, kd_loss, augmentation_alignment_loss, link_recon_loss = loss_tuple
+            (total_loss, student_loss, kd_loss,
+             augmentation_alignment_loss, link_recon_loss,
+             main_kd_weight, aug_guidance_weight,
+             fusion_mp, fusion_sc) = loss_tuple
 
             # Validation step
             val_loss = self.validate()
-            
-            # Track best model
             is_best = False
 
-            # Update progress bar with NEW link prediction metrics
-            # Updated terminology to reflect actual roles
             postfix_dict = {
                 'total': f"{total_loss:.4f}",
                 'student': f"{student_loss:.4f}",
-                'main_kd': f"{kd_loss:.4f}",  # Main teacher knowledge distillation
-                'augmentation_align': f"{augmentation_alignment_loss:.4f}",  # Augmentation alignment
-                'link_rec': f"{link_recon_loss:.4f}",  # Link reconstruction
+                'link_rec': f"{link_recon_loss:.4f}",
                 'val': f"{val_loss:.4f}",
                 'best': f"{self.best_loss:.4f}",
                 'patience': f"{self.patience_counter}/{self.args.patience}"
-            }         
+            }
+
+            if self.teacher and self.args.use_kd_loss:
+                postfix_dict['main_kd'] = f"{kd_loss:.4f}"
+                postfix_dict['kd_w'] = f"{main_kd_weight:.2f}"
+
+            if self.middle_teacher and self.args.use_augmentation_alignment_loss:
+                postfix_dict['aug_align'] = f"{augmentation_alignment_loss:.4f}"
+                postfix_dict['aug_w'] = f"{aug_guidance_weight:.2f}"
+
+            if fusion_mp is not None and fusion_sc is not None:
+                postfix_dict['fuse_mp'] = f"{fusion_mp:.2f}"
+                postfix_dict['fuse_sc'] = f"{fusion_sc:.2f}"
             
-            # Add evaluation metrics when available
+            # Add evaluation metrics
             if epoch % self.args.eval_interval == 0 and epoch > 0:
                 accuracy, macro_f1, micro_f1 = self.evaluate_downstream()
                 postfix_dict.update({
@@ -442,8 +517,8 @@ class StudentTrainer:
             progress_bar.set_postfix(postfix_dict)
             
 
-            if total_loss < self.best_loss:
-                self.best_loss = total_loss
+            if val_loss < self.best_loss:
+                self.best_loss = val_loss
                 self.best_epoch = epoch
                 self.patience_counter = 0
                 is_best = True
@@ -497,7 +572,7 @@ def main():
         torch.cuda.manual_seed(args.seed)
         torch.cuda.manual_seed_all(args.seed)  # For multi-GPU
         
-        # Deterministic behavior (note: may impact performance)
+        # Deterministic behavior
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
         
