@@ -27,7 +27,6 @@ from utils.load_data import load_data
 from utils.evaluate import (
     evaluate_node_classification,
     evaluate_link_prediction,
-    evaluate_node_clustering,
     generate_negative_edges,
     split_edges_for_link_prediction
 )
@@ -159,6 +158,8 @@ class ComprehensiveEvaluator:
 
         elif model_type == 'student':
             compression_ratio = checkpoint.get('compression_ratio', 0.5)
+            structure_scale = checkpoint.get('structure_guidance_scale', getattr(self.args, 'augmentation_structure_scale', 0.15))
+            attention_floor = checkpoint.get('attention_floor', getattr(self.args, 'augmentation_attention_floor', 0.05))
 
             # Check if this is an enhanced student model with guidance parameters
             state_dict = checkpoint.get('model_state_dict', checkpoint)
@@ -175,7 +176,9 @@ class ComprehensiveEvaluator:
                 tau=self.args.tau,
                 lam=self.args.lam,
                 compression_ratio=compression_ratio,
-                use_augmentation_teacher_guidance=has_guidance
+                use_augmentation_teacher_guidance=has_guidance,
+                structure_guidance_scale=structure_scale,
+                attention_floor=attention_floor
             ).to(self.device)
 
             if 'model_state_dict' in checkpoint:
@@ -271,12 +274,12 @@ class ComprehensiveEvaluator:
                 'micro_f1': float(micro_f1)
             }
 
-            print(f"   ✓ Accuracy: {accuracy:.4f}")
-            print(f"   ✓ Macro-F1: {macro_f1:.4f}")
-            print(f"   ✓ Micro-F1: {micro_f1:.4f}")
+            print(f"   Accuracy: {accuracy:.4f}")
+            print(f"   Macro-F1: {macro_f1:.4f}")
+            print(f"   Micro-F1: {micro_f1:.4f}")
 
         except Exception as e:
-            print(f"   ✗ Failed: {e}")
+            print(f"   Failed: {e}")
             model_results['node_classification'] = {'error': str(e)}
 
         # 2. Link Prediction
@@ -287,29 +290,23 @@ class ComprehensiveEvaluator:
                 train_edges, val_edges, test_edges = split_edges_for_link_prediction(self.edges)
                 test_neg_edges = generate_negative_edges(test_edges, self.num_nodes)
 
-                auc_score, ap_score, hits_at_k = evaluate_link_prediction(
+                auc_score, ap_score = evaluate_link_prediction(
                     embeddings, test_edges, test_neg_edges, self.device
                 )
 
                 model_results['link_prediction'] = {
                     'auc': float(auc_score),
-                    'ap': float(ap_score),
-                    'hits_at_10': float(hits_at_k.get('hits_at_10', 0)),
-                    'hits_at_50': float(hits_at_k.get('hits_at_50', 0)),
-                    'hits_at_100': float(hits_at_k.get('hits_at_100', 0))
+                    'ap': float(ap_score)
                 }
 
-                print(f"   ✓ AUC: {auc_score:.4f}")
-                print(f"   ✓ AP: {ap_score:.4f}")
-                print(f"   ✓ Hits@10: {hits_at_k.get('hits_at_10', 0):.4f}")
-                print(f"   ✓ Hits@50: {hits_at_k.get('hits_at_50', 0):.4f}")
-                print(f"   ✓ Hits@100: {hits_at_k.get('hits_at_100', 0):.4f}")
+                print(f"   AUC: {auc_score:.4f}")
+                print(f"   AP: {ap_score:.4f}")
 
             except Exception as e:
-                print(f"   ✗ Failed: {e}")
+                print(f"   Failed: {e}")
                 model_results['link_prediction'] = {'error': str(e)}
         else:
-            print("   ⚠ Skipped (no edges available)")
+            print("   Skipped (no edges available)")
             model_results['link_prediction'] = {'skipped': 'no edges available'}
 
 
@@ -384,15 +381,15 @@ class ComprehensiveEvaluator:
             
             # Categorize distillation quality based on AF
             if average_forget < 0.01:  # < 1% average forgetting
-                quality = "Excellent ✨"
+                quality = "Excellent"
             elif average_forget < 0.03:  # 1-3% forgetting
-                quality = "Very Good ✅"
+                quality = "Very Good"
             elif average_forget < 0.05:  # 3-5% forgetting
-                quality = "Good ✓"
+                quality = "Good"
             elif average_forget < 0.10:  # 5-10% forgetting
-                quality = "Fair ⚠️"
+                quality = "Fair"
             else:  # > 10% forgetting
-                quality = "Needs Improvement ⚠️⚠️"
+                quality = "Needs Improvement"
             
             comparison['distillation_quality'] = quality
         else:
@@ -403,12 +400,12 @@ class ComprehensiveEvaluator:
         print(f"\n📊 PARAMETER REDUCTION: {comparison['parameter_reduction']*100:.1f}%")
         
         if comparison['average_forget'] is not None:
-            print(f"📉 WEIGHTED AVERAGE FORGET (AF): {comparison['average_forget']:.4f} ({comparison['average_forget_percentage']:.2f}%)")
-            print(f"🎯 DISTILLATION QUALITY: {comparison['distillation_quality']}")
-            print(f"   Weighting: {comparison['weighting_scheme']}")
-            print(f"   (Lower AF = Better distillation, focus on primary tasks)")
+            print(f"WEIGHTED AVERAGE FORGET (AF): {comparison['average_forget']:.4f} ({comparison['average_forget_percentage']:.2f}%)")
+            print(f"DISTILLATION QUALITY: {comparison['distillation_quality']}")
+            print(f"Weighting: {comparison['weighting_scheme']}")
+            print(f"(Lower AF = Better distillation, focus on primary tasks)")
         
-        print(f"\n📈 PERFORMANCE RETENTION:")
+        print(f"\nPERFORMANCE RETENTION:")
 
         for task, task_comp in comparison['task_comparisons'].items():
             print(f"\n   {task.replace('_', ' ').title()}:")
@@ -427,12 +424,12 @@ class ComprehensiveEvaluator:
         with open(output_path, 'w') as f:
             json.dump(self.results, f, indent=2)
 
-        print(f"\n💾 Results saved to: {output_path}")
+        print(f"\nResults saved to: {output_path}")
         return output_path
 
     def run_comprehensive_evaluation(self):
         """Run complete evaluation pipeline"""
-        print(f"\n🚀 STARTING COMPREHENSIVE EVALUATION")
+        print(f"\nSTARTING COMPREHENSIVE EVALUATION")
         print(f"Dataset: {self.args.dataset}")
         print(f"Device: {self.device}")
 
@@ -443,7 +440,7 @@ class ComprehensiveEvaluator:
             teacher_results = self.evaluate_single_model(teacher_model, "Teacher", "teacher")
             self.results['models']['teacher'] = teacher_results
         else:
-            print(f"⚠ Teacher model not found: {self.args.teacher_model_path}")
+            print(f"Teacher model not found: {self.args.teacher_model_path}")
             return None
 
         # Evaluate Student Model
@@ -458,7 +455,7 @@ class ComprehensiveEvaluator:
             self.results['comparison'] = comparison
 
         else:
-            print(f"⚠ Student model not found: {self.args.student_model_path}")
+            print(f"Student model not found: {self.args.student_model_path}")
 
         # Evaluate Middle Teacher (if provided)
         if hasattr(self.args, 'middle_teacher_path') and self.args.middle_teacher_path:
@@ -471,7 +468,7 @@ class ComprehensiveEvaluator:
         # Save results
         output_path = self.save_results()
 
-        print(f"\n🎉 COMPREHENSIVE EVALUATION COMPLETED!")
+        print(f"\nCOMPREHENSIVE EVALUATION COMPLETED!")
         print(f"Results saved to: {output_path}")
 
         return self.results

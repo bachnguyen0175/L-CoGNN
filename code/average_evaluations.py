@@ -16,10 +16,10 @@ def load_json_files(pattern="comprehensive_eval_acm_*.json"):
     json_files = glob.glob(pattern)
     
     if not json_files:
-        print(f"❌ No files found matching pattern: {pattern}")
+        print(f"No files found matching pattern: {pattern}")
         sys.exit(1)
     
-    print(f"📁 Found {len(json_files)} evaluation files:")
+    print(f"Found {len(json_files)} evaluation files:")
     for f in sorted(json_files):
         print(f"   - {Path(f).name}")
     
@@ -55,8 +55,6 @@ def extract_metrics(data_list, model_name):
         for key in ['auc', 'ap', 'hits_at_10', 'hits_at_50', 'hits_at_100']:
             if key in model_data.get('link_prediction', {}):
                 metrics['link_prediction'][key].append(model_data['link_prediction'][key])
-        
-        # Node clustering removed - not a primary metric for graph KD
         
         # Parameters
         if 'total_parameters' in model_data:
@@ -94,7 +92,7 @@ def create_averaged_results(data_list):
     
     # Process each model
     for model_name in model_names:
-        print(f"\n📊 Processing {model_name}...")
+        print(f"\nProcessing {model_name}...")
         
         metrics = extract_metrics(data_list, model_name)
         
@@ -194,10 +192,6 @@ def compute_comparison_metrics(averaged_results):
             retention = student['link_prediction'][key] / teacher['link_prediction'][key]
             comparison['link_prediction'][f'{key}_retention'] = retention
     
-    # Node clustering removed - not a primary metric for graph KD evaluation
-    
-    # Calculate Weighted Average Forget (AF) - Lower is better!
-    # Focus on primary tasks: 50% node classification + 50% link prediction
     if forgetting_rates:
         # Compute weighted average
         total_forgetting = sum(forgetting * weight for forgetting, weight in forgetting_rates)
@@ -210,15 +204,15 @@ def compute_comparison_metrics(averaged_results):
         
         # Categorize distillation quality based on AF
         if average_forget < 0.01:  # < 1% average forgetting
-            quality = "Excellent ✨"
+            quality = "Excellent"
         elif average_forget < 0.03:  # 1-3% forgetting
-            quality = "Very Good ✅"
+            quality = "Very Good"
         elif average_forget < 0.05:  # 3-5% forgetting
-            quality = "Good ✓"
+            quality = "Good"
         elif average_forget < 0.10:  # 5-10% forgetting
-            quality = "Fair ⚠️"
+            quality = "Fair"
         else:  # > 10% forgetting
-            quality = "Needs Improvement ⚠️⚠️"
+            quality = "Needs Improvement"
         
         comparison['distillation_quality'] = quality
     else:
@@ -233,22 +227,22 @@ def compute_comparison_metrics(averaged_results):
 def print_summary(averaged_results):
     """Print a summary of the averaged results"""
     print("\n" + "="*80)
-    print("📊 AVERAGED EVALUATION SUMMARY")
+    print("AVERAGED EVALUATION SUMMARY")
     print("="*80)
     
-    print(f"\n📁 Dataset: {averaged_results['dataset']}")
-    print(f"📈 Number of runs: {averaged_results['num_runs']}")
-    print(f"⏰ Timestamp: {averaged_results['timestamp']}")
+    print(f"\nDataset: {averaged_results['dataset']}")
+    print(f"Number of runs: {averaged_results['num_runs']}")
+    print(f"Timestamp: {averaged_results['timestamp']}")
     
     if 'comparison' in averaged_results:
         comp = averaged_results['comparison']
-        print(f"\n🎯 MODEL COMPARISON")
+        print(f"\nMODEL COMPARISON")
         print(f"   Parameter Reduction: {comp['parameter_reduction']*100:.1f}%")
         
         # Print Weighted Average Forget (AF) - Key distillation quality metric
         if comp.get('average_forget') is not None:
-            print(f"\n📉 WEIGHTED AVERAGE FORGET (AF): {comp['average_forget']:.4f} ({comp['average_forget_percentage']:.2f}%)")
-            print(f"🎯 DISTILLATION QUALITY: {comp['distillation_quality']}")
+            print(f"\nWEIGHTED AVERAGE FORGET (AF): {comp['average_forget']:.4f} ({comp['average_forget_percentage']:.2f}%)")
+            print(f"DISTILLATION QUALITY: {comp['distillation_quality']}")
             print(f"   Weighting: {comp.get('weighting_scheme', 'Equal weights')}")
             print(f"   (Lower AF = Better knowledge retention, focus on primary tasks)")
         
@@ -269,7 +263,7 @@ def print_summary(averaged_results):
         teacher = averaged_results['models']['teacher']
         student = averaged_results['models']['student']
         
-        print(f"\n🎓 TEACHER vs STUDENT")
+        print(f"\nTEACHER vs STUDENT")
         print(f"   {'Metric':<25} {'Teacher':<15} {'Student':<15} {'Retention':<10}")
         print(f"   {'-'*65}")
         
@@ -299,14 +293,14 @@ def print_summary(averaged_results):
 
 def main():
     """Main function"""
-    print("🔄 AVERAGING MULTIPLE EVALUATION RESULTS")
+    print("AVERAGING MULTIPLE EVALUATION RESULTS")
     print("="*80)
     
     # Load all JSON files
     data_list, file_names = load_json_files()
     
     if len(data_list) < 2:
-        print(f"⚠️ Warning: Only {len(data_list)} file(s) found. Need at least 2 for averaging.")
+        print(f"Warning: Only {len(data_list)} file(s) found. Need at least 2 for averaging.")
         if len(data_list) == 1:
             print("   Copying single file as averaged result...")
     
@@ -324,7 +318,7 @@ def main():
     with open(output_file, 'w') as f:
         json.dump(averaged_results, f, indent=2)
     
-    print(f"\n✅ Averaged results saved to: {output_file}")
+    print(f"\nAveraged results saved to: {output_file}")
     
     # Print summary
     print_summary(averaged_results)

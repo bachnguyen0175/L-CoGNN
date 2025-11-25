@@ -61,34 +61,6 @@ class intra_att(nn.Module):
         return nei_emb
 
 
-class Sc_encoder(nn.Module):
-    def __init__(self, hidden_dim, sample_rate, nei_num, attn_drop):
-        super(Sc_encoder, self).__init__()
-        self.intra = nn.ModuleList([intra_att(hidden_dim, attn_drop) for _ in range(nei_num)])
-        self.inter = inter_att(hidden_dim, attn_drop)
-        self.sample_rate = sample_rate
-        self.nei_num = nei_num
-
-    def forward(self, nei_h, nei_index):
-        embeds = []
-        for i in range(self.nei_num):
-            sele_nei = []
-            sample_num = self.sample_rate[i]
-            for per_node_nei in nei_index[i]:
-                if len(per_node_nei) >= sample_num:
-                    select_one = torch.tensor(np.random.choice(per_node_nei, sample_num,
-                                                               replace=False))[np.newaxis]
-                else:
-                    select_one = torch.tensor(np.random.choice(per_node_nei, sample_num,
-                                                               replace=True))[np.newaxis]
-                sele_nei.append(select_one)
-            sele_nei = torch.cat(sele_nei, dim=0).to(nei_h[0].device)
-            one_type_emb = F.elu(self.intra[i](sele_nei, nei_h[i + 1], nei_h[0]))
-            embeds.append(one_type_emb)
-        z_mc = self.inter(embeds)
-        return z_mc
-
-
 class mySc_encoder(nn.Module):
     def __init__(self, hidden_dim, sample_rate, nei_num, attn_drop):
         super(mySc_encoder, self).__init__()

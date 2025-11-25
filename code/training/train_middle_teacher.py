@@ -4,13 +4,17 @@ Train Middle Teacher Script
 Stage 1 of hierarchical distillation: Teacher → Middle Teacher
 """
 
+import os
 import sys
 import torch
 import numpy as np
 from tqdm.auto import tqdm
 
-# Add utils to path
-sys.path.append('./utils')
+# Add utils path relative to project root so imports work regardless of cwd
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_UTILS_DIR = os.path.abspath(os.path.join(_SCRIPT_DIR, '..', 'utils'))
+if _UTILS_DIR not in sys.path:
+    sys.path.insert(0, _UTILS_DIR)
 
 from models.kd_heco import AugmentationTeacher, count_parameters
 from models.kd_params import kd_params, get_augmentation_config
@@ -25,21 +29,6 @@ class MiddleTeacherTrainer:
         
         # Load data
         print(f"Loading {args.dataset} dataset...")
-
-        # Set dataset-specific parameters if not already set
-        if not hasattr(args, 'type_num'):
-            if args.dataset == "acm":
-                args.type_num = [4019, 7167, 60]  # [paper, author, subject]
-                args.nei_num = 2
-            elif args.dataset == "dblp":
-                args.type_num = [4057, 14328, 7723, 20]  # [paper, author, conference, term]
-                args.nei_num = 3
-            elif args.dataset == "aminer":
-                args.type_num = [6564, 13329, 35890]  # [paper, author, reference]
-                args.nei_num = 2
-            elif args.dataset == "freebase":
-                args.type_num = [3492, 2502, 33401, 4459]  # [movie, director, actor, writer]
-                args.nei_num = 3
 
         self.nei_index, self.feats, self.mps, self.pos, self.label, self.idx_train, self.idx_val, self.idx_test = load_data(args.dataset, args.ratio, args.type_num)
         
@@ -133,7 +122,8 @@ class MiddleTeacherTrainer:
             # Accumulate losses for logging
             expert_loss_accum += expert_loss.item()
         
-            self.optimizer.step()
+        # Apply update once after accumulating gradients
+        self.optimizer.step()
         
         return expert_loss_accum / accumulation_steps
     
@@ -219,8 +209,8 @@ class MiddleTeacherTrainer:
             
             # Check for improvement
             is_best = False
-            if expert_loss < self.best_loss:
-                self.best_loss = expert_loss
+            if val_loss < self.best_loss:
+                self.best_loss = val_loss
                 self.best_epoch = epoch
                 self.patience_counter = 0
                 is_best = True
@@ -272,6 +262,26 @@ def main():
     np.random.seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)  # For multi-GPU
+        
+        # Deterministic behavior (note: may impact performance)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        
+        # Set environment variable for deterministic CuBLAS operations
+        import os
+        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+        
+        # Enable deterministic algorithms (PyTorch 1.8+)
+        try:
+            torch.use_deterministic_algorithms(True)
+        except AttributeError:
+            # Older PyTorch versions don't have this
+            pass
+        except RuntimeError as e:
+            # If deterministic algorithms cause issues, warn but continue
+            print(f"Warning: Could not enable full deterministic mode: {e}")
+            print("Training will continue with partial reproducibility (seeds + cudnn settings)")
     
     # Create trainer and start training
     trainer = MiddleTeacherTrainer(args)

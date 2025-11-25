@@ -41,6 +41,10 @@ KD-HGRL is a comprehensive framework for **Knowledge Distillation in Heterogeneo
 git clone https://github.com/bachnguyen0175/L-CoGNN.git
 cd L-CoGNN
 
+# Install PyTorch (Required first)
+# Visit https://pytorch.org/get-started/locally/ for your specific command
+pip install torch==2.1.2 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
 # Install dependencies
 pip install -r requirements.txt
 
@@ -86,49 +90,59 @@ bash 4_evaluate.sh             # ~5 minutes
 L-CoGNN/
 ├── 📋 README.md                     # This file
 ├── ⚙️ requirements.txt             # Dependencies
-├── 🐍 main.py                      # Entry point (future CLI)
+├── 🐍 main.py                      # Entry point (Placeholder)
 │
-├── 🧠 code/models/                 # Neural Network Models
-│   ├── kd_heco.py                  # Main HeCo architecture
-│   ├── contrast.py                 # Contrastive learning
-│   ├── sc_encoder.py               # Semantic attention encoder
-│   └── kd_params.py                # Model configurations
+├── 🧠 code/
+│   ├── average_evaluations.py      # Result aggregation script
+│   ├── visualize_results.py        # Result visualization script
+│   │
+│   ├── models/                     # Neural Network Models
+│   │   ├── kd_heco.py              # Main HeCo architecture
+│   │   ├── contrast.py             # Contrastive learning
+│   │   ├── sc_encoder.py           # Semantic attention encoder
+│   │   └── kd_params.py            # Model configurations
+│   │
+│   ├── training/                   # Training Scripts
+│   │   ├── pretrain_teacher.py     # Stage 1: Teacher training
+│   │   ├── train_middle_teacher.py # Stage 2: Middle teacher
+│   │   ├── train_student.py        # Stage 3: Student training
+│   │   └── hetero_augmentations.py # Graph augmentations
+│   │
+│   ├── evaluation/                 # Evaluation Tools
+│   │   ├── comprehensive_evaluation.py # Multi-task evaluation
+│   │   └── evaluate_kd.py          # KD-specific evaluation
+│   │
+│   ├── utils/                      # Utility Functions
+│   │   ├── load_data.py            # Data loading utilities
+│   │   ├── evaluate.py             # Evaluation metrics
+│   │   ├── logreg.py               # Logistic regression
+│   │   ├── create_custom_splits.py # Split generation
+│   │   └── inspect_data.py         # Data inspection
+│   │
+│   ├── scripts/                    # Executable Scripts
+│   │   ├── 1_train_teacher.sh      # Teacher training
+│   │   ├── 2_train_middle_teacher.sh # Middle teacher training
+│   │   ├── 3_train_student.sh      # Student training
+│   │   ├── 4_evaluate.sh           # Comprehensive evaluation
+│   │   └── run_all.sh              # Complete pipeline
+│   │
+│   ├── experiments/                # Experiment Configurations
+│   │   └── configs/                # YAML configuration files
+│   │       ├── acm.yaml            # ACM dataset config
+│   │       └── dblp.yaml           # DBLP dataset config
+│   │
+│   └── tests/                      # Unit Tests & Verification
+│       ├── test_imports.py         # Import validation
+│       ├── test_ratio_load.py      # Data split verification
+│       ├── verify_data_loading.py  # Data loading verification
+│       ├── code_path_verification.py # Path checking
+│       └── analyze_model_architecture.py # Model inspection
 │
-├── 🎓 code/training/               # Training Scripts
-│   ├── pretrain_teacher.py         # Stage 1: Teacher training
-│   ├── train_middle_teacher.py     # Stage 2: Middle teacher
-│   ├── train_student.py            # Stage 3: Student training
-│   └── hetero_augmentations.py     # Graph augmentations
-│
-├── 📊 code/evaluation/             # Evaluation Tools
-│   ├── comprehensive_evaluation.py # Multi-task evaluation
-│   └── evaluate_kd.py              # KD-specific evaluation
-│
-├── 🔧 code/utils/                  # Utility Functions
-│   ├── load_data.py                # Data loading utilities
-│   ├── evaluate.py                 # Evaluation metrics
-│   └── logreg.py                   # Logistic regression
-│
-├── 🚀 code/scripts/                # Executable Scripts
-│   ├── 1_train_teacher.sh          # Teacher training
-│   ├── 2_train_middle_teacher.sh   # Middle teacher training
-│   ├── 3_train_student.sh          # Student training
-│   ├── 4_evaluate.sh               # Comprehensive evaluation
-│   └── run_all.sh                  # Complete pipeline
-│
-├── 🧪 code/experiments/            # Experiment Configurations
-│   └── configs/                    # YAML configuration files
-│       ├── acm.yaml                # ACM dataset config
-│       └── dblp.yaml               # DBLP dataset config
-│
-├── 📚 data/                        # Dataset Files
-│   ├── acm/                        # ACM dataset
-│   ├── dblp/                       # DBLP dataset
-│   ├── aminer/                     # AMiner dataset
-│   └── freebase/                   # Freebase dataset
-│
-└── 🧪 code/tests/                  # Unit Tests
-    └── test_imports.py             # Import validation
+└── 📚 data/                        # Dataset Files
+    ├── acm/                        # ACM dataset
+    ├── dblp/                       # DBLP dataset
+    ├── aminer/                     # AMiner dataset
+    └── freebase/                   # Freebase dataset
 ```
 
 ## 🎯 Usage Guide
@@ -190,7 +204,7 @@ Use YAML configuration files for reproducible experiments:
 
 ```bash
 # Example: ACM dataset configuration
-python main.py --config code/experiments/configs/acm.yaml  # Future feature
+python main.py --config code/experiments/configs/acm.yaml  # Future feature (Currently main.py is a placeholder)
 ```
 
 ## 📊 Datasets

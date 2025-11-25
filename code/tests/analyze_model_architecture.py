@@ -9,9 +9,13 @@ import os
 import sys
 from collections import OrderedDict
 
-# Add code directory to path for imports
-sys.path.append('/home/nguye/L-CoGNN/code')
-sys.path.append('/home/nguye/L-CoGNN')
+# Add project root and code directory to path for imports (portable)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+code_dir = os.path.join(project_root, 'code')
+if code_dir not in sys.path:
+    sys.path.insert(0, code_dir)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 # Import necessary model classes
 try:
@@ -236,7 +240,7 @@ def main():
     model_files = [
         "results/middle_teacher_heco_acm.pkl",
         "middle_teacher_heco_acm.pkl",
-        "/home/nguye/L-CoGNN/results/middle_teacher_heco_acm.pkl"
+    os.path.join(project_root, "results", "middle_teacher_heco_acm.pkl")
     ]
     
     model_path = None
@@ -249,7 +253,7 @@ def main():
         print("❌ Model file not found. Looking for available .pkl files...")
         
         # Search in current directory and results
-        search_dirs = [".", "results", "/home/nguye/L-CoGNN/results"]
+        search_dirs = [".", os.path.join(project_root, "results"), "results"]
         for search_dir in search_dirs:
             if os.path.exists(search_dir):
                 pkl_files = [f for f in os.listdir(search_dir) if f.endswith('.pkl')]
